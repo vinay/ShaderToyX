@@ -1,3 +1,9 @@
+/*
+ * ShaderToyX - a native Win32/OpenGL ShaderToy-style shader playground.
+ * Copyright (c) 2026 Vinay Menon
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef EDITOR_H
 #define EDITOR_H
 
@@ -8,6 +14,10 @@
 
 #define EDITOR_CODE_SIZE       (64 * 1024)
 #define EDITOR_ERROR_LOG_SIZE  4096
+
+/* Width of the editor panel at 96 DPI. Use editor_panel_width() for the
+   scaled, visibility-aware value. */
+#define EDITOR_PANEL_W  620
 
 #define NUM_TABS  5  /* Image, Buf A, Buf B, Buf C, Buf D */
 
@@ -46,6 +56,12 @@ typedef struct Editor
     bool paused;             /* true = iTime frozen */
     bool reset_time;         /* set true to reset iTime to 0 */
     int  active_tab;         /* 0=Image, 1=BufA, 2=BufB, 3=BufC, 4=BufD */
+    int  dpi;                /* current DPI of the panel (96 = 100%) */
+
+    /* Text currently shown in the controls, so we only call
+       SetWindowText when something actually changed. */
+    char shown_error[EDITOR_ERROR_LOG_SIZE];
+    char shown_fps[96];
 
     /* Win32 handles */
     HWND  panel;
@@ -64,12 +80,15 @@ typedef struct Editor
     HFONT tab_font;
 } Editor;
 
-void editor_init(Editor *e, HWND parent, HINSTANCE hInstance);
+void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi);
 void editor_destroy(Editor *e);
 void editor_toggle(Editor *e);
 void editor_layout(Editor *e);
+void editor_set_dpi(Editor *e, int dpi);   /* recreate fonts + relayout for a new DPI */
+int  editor_panel_width(const Editor *e);  /* scaled width, or 0 when hidden */
 void editor_update(Editor *e, float elapsed_time, float fps, int canvas_w, int canvas_h);
 void editor_sync_from_control(Editor *e);  /* save active tab's EDIT to code[] */
+void editor_set_error(Editor *e, int tab, const char *text); /* store a compile log (converts \n to \r\n) */
 void editor_switch_tab(Editor *e, int tab); /* switch to the given tab */
 void editor_add_tab(Editor *e);              /* show the next hidden buffer tab */
 void editor_remove_tab(Editor *e, int tab);  /* hide a buffer tab */

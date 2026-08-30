@@ -1,3 +1,9 @@
+/*
+ * ShaderToyX - a native Win32/OpenGL ShaderToy-style shader playground.
+ * Copyright (c) 2026 Vinay Menon
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef GL_LITE_H
 #define GL_LITE_H
 
@@ -22,6 +28,10 @@ typedef char          GLchar;
 typedef ptrdiff_t     GLsizeiptr;
 typedef ptrdiff_t     GLintptr;
 
+typedef void (APIENTRY *GLDEBUGPROC)(GLenum source, GLenum type, GLuint id,
+                                     GLenum severity, GLsizei length,
+                                     const GLchar *message, const void *userParam);
+
 /* ------------------------------------------------------------------ */
 /*  Constants                                                         */
 /* ------------------------------------------------------------------ */
@@ -36,19 +46,16 @@ typedef ptrdiff_t     GLintptr;
 #define GL_TEXTURE1                       0x84C1
 #define GL_TEXTURE2                       0x84C2
 #define GL_TEXTURE3                       0x84C3
-#define GL_TEXTURE_2D_BINDING             0x8069
 #define GL_FRAMEBUFFER                    0x8D40
 #define GL_COLOR_ATTACHMENT0              0x8CE0
 #define GL_FRAMEBUFFER_COMPLETE           0x8CD5
 #define GL_RGBA16F                        0x881A
-#define GL_RGBA                           0x1908
-#define GL_FLOAT_TYPE                     0x1406
 #define GL_CLAMP_TO_EDGE                  0x812F
-#define GL_TEXTURE_MIN_FILTER             0x2801
-#define GL_TEXTURE_MAG_FILTER             0x2800
-#define GL_TEXTURE_WRAP_S                 0x2802
-#define GL_TEXTURE_WRAP_T                 0x2803
-#define GL_LINEAR                         0x2601
+
+/* KHR_debug / GL 4.3 (optional, used by Debug builds only) */
+#define GL_DEBUG_OUTPUT                   0x92E0
+#define GL_DEBUG_OUTPUT_SYNCHRONOUS       0x8242
+#define GL_DEBUG_SEVERITY_NOTIFICATION    0x826B
 
 /* ------------------------------------------------------------------ */
 /*  Function pointer types and extern declarations                    */
@@ -99,11 +106,16 @@ GL_FUNC(void,   glBindFramebuffer,        GLenum target, GLuint framebuffer)
 GL_FUNC(void,   glFramebufferTexture2D,   GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)
 GL_FUNC(GLenum, glCheckFramebufferStatus, GLenum target)
 
+/* Optional: stays NULL if the driver does not expose KHR_debug */
+GL_FUNC(void,   glDebugMessageCallback,   GLDEBUGPROC callback, const void *userParam)
+
 #undef GL_FUNC
 
 /* ------------------------------------------------------------------ */
-/*  Loader: call once after creating an OpenGL context                */
+/*  Loader: call once after creating an OpenGL context.               */
+/*  Returns 1 on success. On failure, the name of the first missing   */
+/*  required function is written to *missing (may be NULL).           */
 /* ------------------------------------------------------------------ */
-int gl_lite_init(void);
+int gl_lite_init(const char **missing);
 
 #endif

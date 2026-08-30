@@ -1,5 +1,10 @@
+/*
+ * ShaderToyX - a native Win32/OpenGL ShaderToy-style shader playground.
+ * Copyright (c) 2026 Vinay Menon
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "gl_lite.h"
-#include <stdio.h>
 
 /* ------------------------------------------------------------------ */
 /*  Define function pointers (storage)                                */
@@ -48,6 +53,8 @@ GL_FUNC(void,   glBindFramebuffer,        GLenum target, GLuint framebuffer)
 GL_FUNC(void,   glFramebufferTexture2D,   GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)
 GL_FUNC(GLenum, glCheckFramebufferStatus, GLenum target)
 
+GL_FUNC(void,   glDebugMessageCallback,   GLDEBUGPROC callback, const void *userParam)
+
 #undef GL_FUNC
 
 /* ------------------------------------------------------------------ */
@@ -56,23 +63,31 @@ static void *get_proc(const char *name)
     void *p = (void *)wglGetProcAddress(name);
     if (!p || p == (void *)0x1 || p == (void *)0x2 || p == (void *)0x3 || p == (void *)-1)
     {
-        HMODULE module = LoadLibraryA("opengl32.dll");
-        if (module)
-        {
-            p = (void *)GetProcAddress(module, name);
-        }
+        /* opengl32.dll is already linked in, so just look it up rather
+           than LoadLibrary-ing it (which would leak a refcount per call) */
+        HMODULE module = GetModuleHandleA("opengl32.dll");
+        p = module ? (void *)GetProcAddress(module, name) : NULL;
     }
     return p;
 }
 
 /* ------------------------------------------------------------------ */
-int gl_lite_init(void)
+int gl_lite_init(const char **missing)
 {
     int ok = 1;
+    if (missing) *missing = NULL;
 
 #define LOAD(name) \
     name = (PFN_##name)get_proc(#name); \
-    if (!name) { fprintf(stderr, "Failed to load GL function: %s\n", #name); ok = 0; }
+    if (!name) \
+    { \
+        OutputDebugStringA("gl_lite: failed to load " #name "\n"); \
+        if (missing && !*missing) *missing = #name; \
+        ok = 0; \
+    }
+
+#define LOAD_OPTIONAL(name) \
+    name = (PFN_##name)get_proc(#name);
 
     LOAD(glCreateShader)
     LOAD(glDeleteShader)
@@ -116,7 +131,10 @@ int gl_lite_init(void)
     LOAD(glFramebufferTexture2D)
     LOAD(glCheckFramebufferStatus)
 
+    LOAD_OPTIONAL(glDebugMessageCallback)
+
 #undef LOAD
+#undef LOAD_OPTIONAL
 
     return ok;
 }

@@ -1,3 +1,9 @@
+/*
+ * ShaderToyX - a native Win32/OpenGL ShaderToy-style shader playground.
+ * Copyright (c) 2026 Vinay Menon
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "shader.h"
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +19,9 @@ static const char *vertex_source =
     "{\n"
     "    gl_Position = vec4(aPos, 0.0, 1.0);\n"
     "}\n";
+
+/* The vertex shader never changes, so compile it once and reuse it */
+static GLuint g_vertex_shader = 0;
 
 /* ------------------------------------------------------------------ */
 /*  Fragment shader header: uniforms matching ShaderToy                */
@@ -66,6 +75,16 @@ void shader_destroy(ShaderProgram *sp)
 }
 
 /* ------------------------------------------------------------------ */
+void shader_shutdown(void)
+{
+    if (g_vertex_shader)
+    {
+        glDeleteShader(g_vertex_shader);
+        g_vertex_shader = 0;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 static GLuint compile_shader(GLenum type, const char *source, char *error, int error_size)
 {
     GLuint s = glCreateShader(type);
@@ -88,6 +107,17 @@ int shader_compile(ShaderProgram *sp, const char *user_source)
 {
     sp->compile_error[0] = '\0';
 
+    /* Compile the shared vertex shader on first use */
+    if (!g_vertex_shader)
+    {
+        g_vertex_shader = compile_shader(GL_VERTEX_SHADER, vertex_source,
+                                         sp->compile_error, SHADER_ERROR_LOG_SIZE);
+        if (!g_vertex_shader)
+        {
+            return 0;
+        }
+    }
+
     /* Build full fragment source: header + user code + footer */
     size_t hlen = strlen(fragment_header);
     size_t ulen = strlen(user_source);
@@ -106,35 +136,23 @@ int shader_compile(ShaderProgram *sp, const char *user_source)
     memcpy(full_src + hlen + ulen, fragment_footer, flen);
     full_src[total - 1] = '\0';
 
-    /* Compile vertex shader */
-    GLuint vs = compile_shader(GL_VERTEX_SHADER, vertex_source,
-                               sp->compile_error, SHADER_ERROR_LOG_SIZE);
-    if (!vs)
-    {
-        free(full_src);
-        return 0;
-    }
-
     /* Compile fragment shader */
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, full_src,
                                sp->compile_error, SHADER_ERROR_LOG_SIZE);
+    free(full_src);
     if (!fs)
     {
-        glDeleteShader(vs);
-        free(full_src);
         return 0;
     }
 
     /* Link program */
     GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
+    glAttachShader(prog, g_vertex_shader);
     glAttachShader(prog, fs);
     glLinkProgram(prog);
 
-    /* Shaders can be freed after linking */
-    glDeleteShader(vs);
+    /* The fragment shader object can be freed after linking */
     glDeleteShader(fs);
-    free(full_src);
 
     GLint ok;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
@@ -177,7 +195,7 @@ void shader_set_uniforms(ShaderProgram *sp, const ShaderUniforms *u)
     glUniform1fv(glGetUniformLocation(p, "iChannelTime"), 4, u->iChannelTime);
     glUniform3fv(glGetUniformLocation(p, "iChannelResolution"), 4, u->iChannelResolution);
 
-    /* Bind texture units for iChannel0..3 (no textures loaded yet) */
+    /* Bind texture units for iChannel0..3 */
     glUniform1i(glGetUniformLocation(p, "iChannel0"), 0);
     glUniform1i(glGetUniformLocation(p, "iChannel1"), 1);
     glUniform1i(glGetUniformLocation(p, "iChannel2"), 2);

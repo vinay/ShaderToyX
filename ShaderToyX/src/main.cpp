@@ -1,3 +1,9 @@
+/*
+ * ShaderToyX - a native Win32/OpenGL ShaderToy-style shader playground.
+ * Copyright (c) 2026 Vinay Menon
+ * SPDX-License-Identifier: MIT
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -21,26 +27,49 @@ typedef BOOL  (APIENTRY *PFNWGLSWAPINTERVALEXTPROC)(int);
 
 #define WGL_CONTEXT_MAJOR_VERSION_ARB     0x2091
 #define WGL_CONTEXT_MINOR_VERSION_ARB     0x2092
+#define WGL_CONTEXT_FLAGS_ARB             0x2094
 #define WGL_CONTEXT_PROFILE_MASK_ARB      0x9126
+#define WGL_CONTEXT_DEBUG_BIT_ARB         0x00000001
 #define WGL_CONTEXT_CORE_PROFILE_BIT_ARB  0x00000001
 
 /* ------------------------------------------------------------------ */
 /*  Globals                                                           */
 /* ------------------------------------------------------------------ */
-static HWND   g_hwnd    = NULL;   /* main frame window */
-static HWND   g_glview  = NULL;   /* child window for GL rendering */
-static HDC    g_hdc     = NULL;
-static HGLRC  g_hglrc   = NULL;
+static HWND   g_hwnd      = NULL;   /* main frame window */
+static HWND   g_glview    = NULL;   /* child window for GL rendering */
+static HDC    g_hdc       = NULL;
+static HGLRC  g_hglrc     = NULL;
 static bool   g_running   = true;
 static int    g_gl_width  = 1024;
 static int    g_gl_height = 768;
+static int    g_dpi       = 96;
 
+/* Default canvas size at 96 DPI */
 #define DEFAULT_CANVAS_W  1024
 #define DEFAULT_CANVAS_H  768
-#define EDITOR_PANEL_W    620
 
-/* Forward declaration — the editor is referenced by the wnd_proc */
+/* The editor is referenced by the wnd_proc */
 static Editor *g_editor = NULL;
+
+/* Mouse state for the iMouse uniform, in GL pixel coords (origin bottom-left).
+   Updated from the GL view's window messages so clicks in the editor panel
+   never leak into the shader. */
+static float g_mouse_x = 0.0f, g_mouse_y = 0.0f;   /* current position (while dragging) */
+static float g_click_x = 0.0f, g_click_y = 0.0f;   /* position of the last button-down */
+static bool  g_mouse_down    = false;
+static bool  g_mouse_clicked = false;              /* true for exactly one frame after button-down */
+
+/* Scale a 96-DPI pixel value to the window's current DPI */
+static int sc(int v)
+{
+    return MulDiv(v, g_dpi, 96);
+}
+
+/* ------------------------------------------------------------------ */
+static void fatal(const char *msg)
+{
+    MessageBoxA(g_hwnd, msg, "ShaderToyX", MB_OK | MB_ICONERROR);
+}
 
 /* ------------------------------------------------------------------ */
 /*  Reposition GL view and editor panel side-by-side                  */
@@ -53,10 +82,10 @@ static void layout_children(void)
     int total_h = rc.bottom;
 
     int editor_w = 0;
-    if (g_editor && g_editor->show_editor)
+    if (g_editor)
     {
-        editor_w = 620;
-        if (g_editor->panel)
+        editor_w = editor_panel_width(g_editor);
+        if (editor_w > 0)
         {
             editor_layout(g_editor);
         }
@@ -65,6 +94,7 @@ static void layout_children(void)
     int gl_x = editor_w;
     int gl_w = total_w - editor_w;
     if (gl_w < 1) gl_w = 1;
+    if (total_h < 1) total_h = 1;
 
     g_gl_width  = gl_w;
     g_gl_height = total_h;
@@ -76,8 +106,50 @@ static void layout_children(void)
 }
 
 /* ------------------------------------------------------------------ */
+/*  GL view window procedure: mouse tracking for iMouse               */
+/* ------------------------------------------------------------------ */
+static void update_mouse_pos(LPARAM lParam)
+{
+    int x = (int)(short)LOWORD(lParam);
+    int y = (int)(short)HIWORD(lParam);
+    g_mouse_x = (float)x;
+    g_mouse_y = (float)(g_gl_height - 1 - y);
+}
+
 static LRESULT CALLBACK glview_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    switch (msg)
+    {
+    case WM_LBUTTONDOWN:
+        SetCapture(hwnd);
+        update_mouse_pos(lParam);
+        g_click_x = g_mouse_x;
+        g_click_y = g_mouse_y;
+        g_mouse_down    = true;
+        g_mouse_clicked = true;
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if (g_mouse_down)
+        {
+            update_mouse_pos(lParam);
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (g_mouse_down)
+        {
+            update_mouse_pos(lParam);
+            g_mouse_down = false;
+            ReleaseCapture();
+        }
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        g_mouse_down = false;
+        return 0;
+    }
+
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
@@ -93,31 +165,33 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         return 0;
 
-    case WM_KEYDOWN:
-        if (wParam == VK_F1 && g_editor)
-        {
-            editor_toggle(g_editor);
-            layout_children();
-            return 0;
-        }
-        if (wParam == VK_F5 && g_editor)
-        {
-            editor_sync_from_control(g_editor);
-            g_editor->needs_compile = true;
-            return 0;
-        }
-        break;
-
     case WM_GETMINMAXINFO:
     {
         MINMAXINFO *mmi = (MINMAXINFO *)lParam;
-        /* Compute minimum window size so the canvas is at least DEFAULT_CANVAS_W x DEFAULT_CANVAS_H */
-        int min_client_w = DEFAULT_CANVAS_W + (g_editor && g_editor->show_editor ? EDITOR_PANEL_W : 0);
-        int min_client_h = DEFAULT_CANVAS_H;
+        /* Minimum window size so the canvas is at least DEFAULT_CANVAS_W x DEFAULT_CANVAS_H */
+        int min_client_w = sc(DEFAULT_CANVAS_W) + (g_editor ? editor_panel_width(g_editor) : 0);
+        int min_client_h = sc(DEFAULT_CANVAS_H);
         RECT r = { 0, 0, min_client_w, min_client_h };
-        AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, (UINT)g_dpi);
         mmi->ptMinTrackSize.x = r.right - r.left;
         mmi->ptMinTrackSize.y = r.bottom - r.top;
+        return 0;
+    }
+
+    case WM_DPICHANGED:
+    {
+        g_dpi = HIWORD(wParam);
+        if (g_editor)
+        {
+            editor_set_dpi(g_editor, g_dpi);
+        }
+        /* Windows suggests a new rect that keeps the window the same physical size */
+        const RECT *suggested = (const RECT *)lParam;
+        SetWindowPos(hwnd, NULL,
+                     suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
     }
 
@@ -134,25 +208,51 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 }
 
 /* ------------------------------------------------------------------ */
-/*  Create a Win32 window + OpenGL 3.3 Core context                   */
+/*  GL debug output (Debug builds, when the driver supports KHR_debug) */
 /* ------------------------------------------------------------------ */
-static int create_window_and_context(HINSTANCE hInstance)
+#ifdef _DEBUG
+static void APIENTRY gl_debug_callback(GLenum source, GLenum type, GLuint id,
+                                       GLenum severity, GLsizei length,
+                                       const GLchar *message, const void *userParam)
 {
+    (void)source; (void)type; (void)id; (void)length; (void)userParam;
+    if (severity == GL_DEBUG_SEVERITY_NOTIFICATION)
+    {
+        return;
+    }
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "GL debug: %s\n", message);
+    OutputDebugStringA(buf);
+}
+#endif
+
+/* ------------------------------------------------------------------ */
+/*  Create a Win32 window + OpenGL 3.3 Core context.                  */
+/*  Returns NULL on success, otherwise an error message.              */
+/* ------------------------------------------------------------------ */
+static const char *create_window_and_context(HINSTANCE hInstance)
+{
+    /* Per-monitor DPI awareness. The manifest (see the vcxproj) already
+       declares this; the call is a fallback for builds without it, and
+       harmlessly fails if the manifest has already set it. */
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    g_dpi = (int)GetDpiForSystem();
+
     /* ---- Main frame window ---- */
     WNDCLASSA wc = {};
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = wnd_proc;
-    wc.hInstance      = hInstance;
-    wc.hCursor        = LoadCursor(NULL, IDC_ARROW);
-    wc.lpszClassName  = "ShaderToyX";
+    wc.hInstance     = hInstance;
+    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = "ShaderToyX";
 
     if (!RegisterClassA(&wc))
     {
-        return 0;
+        return "RegisterClass failed for the main window.";
     }
 
-    RECT rc = { 0, 0, DEFAULT_CANVAS_W + EDITOR_PANEL_W, DEFAULT_CANVAS_H };
-    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+    RECT rc = { 0, 0, sc(DEFAULT_CANVAS_W + EDITOR_PANEL_W), sc(DEFAULT_CANVAS_H) };
+    AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0, (UINT)g_dpi);
 
     g_hwnd = CreateWindowExA(
         0, wc.lpszClassName, "ShaderToyX",
@@ -164,31 +264,43 @@ static int create_window_and_context(HINSTANCE hInstance)
 
     if (!g_hwnd)
     {
-        return 0;
+        return "CreateWindow failed for the main window.";
+    }
+
+    /* The window may have landed on a monitor with a different DPI than
+       the system DPI; re-read it and resize to match. */
+    int window_dpi = (int)GetDpiForWindow(g_hwnd);
+    if (window_dpi > 0 && window_dpi != g_dpi)
+    {
+        g_dpi = window_dpi;
+        RECT r2 = { 0, 0, sc(DEFAULT_CANVAS_W + EDITOR_PANEL_W), sc(DEFAULT_CANVAS_H) };
+        AdjustWindowRectExForDpi(&r2, WS_OVERLAPPEDWINDOW, FALSE, 0, (UINT)g_dpi);
+        SetWindowPos(g_hwnd, NULL, 0, 0, r2.right - r2.left, r2.bottom - r2.top,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     /* ---- GL view child window ---- */
     WNDCLASSA glwc = {};
     glwc.style         = CS_OWNDC;
     glwc.lpfnWndProc   = glview_proc;
-    glwc.hInstance      = hInstance;
-    glwc.lpszClassName  = "ShaderToyX_GLView";
+    glwc.hInstance     = hInstance;
+    glwc.lpszClassName = "ShaderToyX_GLView";
 
     if (!RegisterClassA(&glwc))
     {
-        return 0;
+        return "RegisterClass failed for the GL view.";
     }
 
     g_glview = CreateWindowExA(
         0, glwc.lpszClassName, NULL,
         WS_CHILD | WS_VISIBLE,
-        EDITOR_PANEL_W, 0, DEFAULT_CANVAS_W, DEFAULT_CANVAS_H,
+        0, 0, 1, 1,   /* positioned by layout_children() */
         g_hwnd, NULL, hInstance, NULL
     );
 
     if (!g_glview)
     {
-        return 0;
+        return "CreateWindow failed for the GL view.";
     }
 
     g_hdc = GetDC(g_glview);
@@ -206,14 +318,14 @@ static int create_window_and_context(HINSTANCE hInstance)
     int pf = ChoosePixelFormat(g_hdc, &pfd);
     if (!pf || !SetPixelFormat(g_hdc, pf, &pfd))
     {
-        return 0;
+        return "No suitable OpenGL pixel format found.";
     }
 
     /* ---- Legacy context (needed to bootstrap WGL extensions) ---- */
     HGLRC legacy = wglCreateContext(g_hdc);
     if (!legacy || !wglMakeCurrent(g_hdc, legacy))
     {
-        return 0;
+        return "Could not create a legacy OpenGL context.";
     }
 
     PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB =
@@ -221,7 +333,10 @@ static int create_window_and_context(HINSTANCE hInstance)
 
     if (!wglCreateContextAttribsARB)
     {
-        return 0;
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(legacy);
+        return "wglCreateContextAttribsARB is not available.\n"
+               "Your graphics driver does not support modern OpenGL.";
     }
 
     /* ---- Modern 3.3 Core context ---- */
@@ -230,6 +345,9 @@ static int create_window_and_context(HINSTANCE hInstance)
         WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
         WGL_CONTEXT_MINOR_VERSION_ARB, 3,
         WGL_CONTEXT_PROFILE_MASK_ARB,  WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+#ifdef _DEBUG
+        WGL_CONTEXT_FLAGS_ARB,         WGL_CONTEXT_DEBUG_BIT_ARB,
+#endif
         0
     };
 
@@ -239,7 +357,8 @@ static int create_window_and_context(HINSTANCE hInstance)
 
     if (!g_hglrc || !wglMakeCurrent(g_hdc, g_hglrc))
     {
-        return 0;
+        return "Could not create an OpenGL 3.3 Core context.\n"
+               "ShaderToyX requires a GPU and driver with OpenGL 3.3 support.";
     }
 
     /* ---- V-Sync ---- */
@@ -250,7 +369,7 @@ static int create_window_and_context(HINSTANCE hInstance)
         wglSwapIntervalEXT(1);
     }
 
-    return 1;
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -269,28 +388,69 @@ static double get_time(void)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Compile every visible tab; destroy programs for hidden tabs        */
+/* ------------------------------------------------------------------ */
+static void compile_all(Editor *editor, ShaderProgram *programs)
+{
+    for (int i = 0; i < NUM_TABS; i++)
+    {
+        editor->error_log[i][0] = '\0';
+        if (editor_is_tab_visible(editor, i) && editor->code[i][0])
+        {
+            if (!shader_compile(&programs[i], editor->code[i]))
+            {
+                editor_set_error(editor, i, programs[i].compile_error);
+            }
+        }
+        else if (!editor_is_tab_visible(editor, i))
+        {
+            shader_destroy(&programs[i]);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     (void)hPrevInstance;
     (void)lpCmdLine;
     (void)nCmdShow;
 
-    if (!create_window_and_context(hInstance))
+    const char *err = create_window_and_context(hInstance);
+    if (err)
     {
+        fatal(err);
         return 1;
     }
 
-    if (!gl_lite_init())
+    const char *missing = NULL;
+    if (!gl_lite_init(&missing))
     {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "Failed to load a required OpenGL function: %s\n"
+                 "ShaderToyX requires OpenGL 3.3 support.",
+                 missing ? missing : "(unknown)");
+        fatal(buf);
         return 1;
     }
+
+#ifdef _DEBUG
+    if (glDebugMessageCallback)
+    {
+        glEnable(GL_DEBUG_OUTPUT);
+        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+        glDebugMessageCallback(gl_debug_callback, NULL);
+    }
+#endif
 
     /* ---- Application state ---- */
     Renderer renderer;
     renderer_init(&renderer);
 
-    Editor editor;
-    editor_init(&editor, g_hwnd, hInstance);
+    /* The editor holds ~340 KB of text buffers; keep it off the stack */
+    static Editor editor;
+    editor_init(&editor, g_hwnd, hInstance, g_dpi);
     g_editor = &editor;
     layout_children();
 
@@ -302,33 +462,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     /* Compile visible tabs on startup */
-    for (int i = 0; i < NUM_TABS; i++)
-    {
-        if (editor_is_tab_visible(&editor, i) && editor.code[i][0])
-        {
-            if (!shader_compile(&programs[i], editor.code[i]))
-            {
-                strncpy(editor.error_log[i], programs[i].compile_error,
-                        EDITOR_ERROR_LOG_SIZE - 1);
-            }
-        }
-    }
+    compile_all(&editor, programs);
 
     /* Create initial FBOs */
     renderer_resize_buffers(&renderer, g_gl_width, g_gl_height);
 
-    double start_time  = get_time();
-    double last_time   = start_time;
+    double last_time   = get_time();
     float  shader_time = 0.0f;
     int    frame_count = 0;
     double fps_accum   = 0.0;
     int    fps_frames  = 0;
     float  display_fps = 0.0f;
-
-    /* Mouse tracking for iMouse uniform */
-    float mouse_x = 0.0f, mouse_y = 0.0f;
-    float click_x = 0.0f, click_y = 0.0f;
-    bool  was_pressed = false;
 
     /* ---- Main loop ---- */
     while (g_running)
@@ -336,6 +480,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         MSG msg;
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE))
         {
+            /* Global hotkeys. These are intercepted before dispatch because
+               the focused child (usually the code EDIT control) would
+               otherwise swallow the key and never forward it to the frame. */
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_F5)
+            {
+                editor_sync_from_control(&editor);
+                editor.needs_compile = true;
+                continue;
+            }
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_F1)
+            {
+                editor_toggle(&editor);
+                layout_children();
+                continue;
+            }
+
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
             if (msg.message == WM_QUIT)
@@ -350,8 +510,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
 
         /* Timing */
-        double now     = get_time();
-        float  delta   = (float)(now - last_time);
+        double now   = get_time();
+        float  delta = (float)(now - last_time);
         last_time = now;
 
         /* Handle reset */
@@ -380,51 +540,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             fps_frames = 0;
         }
 
-        /* Mouse input */
-        bool lmb_down = false;
-        {
-            POINT pt;
-            GetCursorPos(&pt);
-            ScreenToClient(g_glview, &pt);
-
-            lmb_down = (GetKeyState(VK_LBUTTON) & 0x8000) != 0;
-
-            if (lmb_down)
-            {
-                /* Convert to GL coords (origin bottom-left) */
-                mouse_x = (float)pt.x;
-                mouse_y = (float)(g_gl_height - 1 - pt.y);
-
-                if (!was_pressed)
-                {
-                    click_x = mouse_x;
-                    click_y = mouse_y;
-                }
-            }
-        }
-        was_pressed = lmb_down;
-
         /* Recompile on request — only visible tabs */
         if (editor.needs_compile)
         {
-            for (int i = 0; i < NUM_TABS; i++)
-            {
-                editor.error_log[i][0] = '\0';
-                if (editor_is_tab_visible(&editor, i) && editor.code[i][0])
-                {
-                    if (!shader_compile(&programs[i], editor.code[i]))
-                    {
-                        strncpy(editor.error_log[i], programs[i].compile_error,
-                                EDITOR_ERROR_LOG_SIZE - 1);
-                        editor.error_log[i][EDITOR_ERROR_LOG_SIZE - 1] = '\0';
-                    }
-                }
-                else if (!editor_is_tab_visible(&editor, i))
-                {
-                    /* Destroy program for hidden tabs */
-                    shader_destroy(&programs[i]);
-                }
-            }
+            compile_all(&editor, programs);
             editor.needs_compile = false;
         }
 
@@ -443,10 +562,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         uniforms.iFrame         = frame_count;
         uniforms.iSampleRate    = 44100.0f;
 
-        uniforms.iMouse[0] = mouse_x;
-        uniforms.iMouse[1] = mouse_y;
-        uniforms.iMouse[2] = lmb_down ?  click_x : -click_x;
-        uniforms.iMouse[3] = lmb_down ?  click_y : -click_y;
+        /* iMouse, matching Shadertoy:
+             xy = current position while dragging (last position afterwards)
+             z  = click x, positive while the button is held, negative after release
+             w  = click y, positive only on the frame the button went down */
+        uniforms.iMouse[0] = g_mouse_x;
+        uniforms.iMouse[1] = g_mouse_y;
+        uniforms.iMouse[2] = g_mouse_down    ? g_click_x : -g_click_x;
+        uniforms.iMouse[3] = g_mouse_clicked ? g_click_y : -g_click_y;
+        g_mouse_clicked = false;
+
+        /* All four buffers share the canvas resolution */
+        for (int c = 0; c < 4; c++)
+        {
+            uniforms.iChannelResolution[c * 3 + 0] = (float)g_gl_width;
+            uniforms.iChannelResolution[c * 3 + 1] = (float)g_gl_height;
+            uniforms.iChannelResolution[c * 3 + 2] = 1.0f;
+        }
 
         time_t tnow = time(NULL);
         struct tm *lt = localtime(&tnow);
@@ -483,8 +615,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             GLuint fbo = renderer_get_buffer_fbo(&renderer, b);
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-            glClear(GL_COLOR_BUFFER_BIT);
             renderer_draw_pass(&renderer, fbo, &programs[TAB_BUF_A + b],
                                &uniforms, channels);
         }
@@ -519,6 +649,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     {
         shader_destroy(&programs[i]);
     }
+    shader_shutdown();
     renderer_destroy(&renderer);
     editor_destroy(&editor);
 

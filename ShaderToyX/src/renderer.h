@@ -1,3 +1,9 @@
+/*
+ * ShaderToyX - a native Win32/OpenGL ShaderToy-style shader playground.
+ * Copyright (c) 2026 Vinay Menon
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef RENDERER_H
 #define RENDERER_H
 
@@ -11,7 +17,7 @@ typedef struct BufferPass
 {
     GLuint fbo[2];       /* ping-pong framebuffers */
     GLuint tex[2];       /* color attachments */
-    int    current;      /* which FBO to write to (0 or 1) */
+    int    current;      /* index of the readable (last written) side */
     int    width;
     int    height;
 } BufferPass;
@@ -39,7 +45,7 @@ void renderer_draw_pass(Renderer *r, GLuint fbo, ShaderProgram *sp,
 /* Swap the ping-pong buffer for the given index */
 void renderer_swap_buffer(Renderer *r, int buf_index);
 
-/* Get the readable (previous frame) texture for a buffer */
+/* Get the readable (last written) texture for a buffer */
 GLuint renderer_get_buffer_texture(Renderer *r, int buf_index);
 
 /* Get the writable FBO for a buffer */

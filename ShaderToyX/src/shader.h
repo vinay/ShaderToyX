@@ -1,3 +1,9 @@
+/*
+ * ShaderToyX - a native Win32/OpenGL ShaderToy-style shader playground.
+ * Copyright (c) 2026 Vinay Menon
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef SHADER_H
 #define SHADER_H
 
@@ -29,5 +35,9 @@ void shader_init(ShaderProgram *sp);
 void shader_destroy(ShaderProgram *sp);
 int  shader_compile(ShaderProgram *sp, const char *user_source);
 void shader_set_uniforms(ShaderProgram *sp, const ShaderUniforms *uniforms);
+
+/* Release resources shared by all programs (the cached vertex shader).
+   Call once at shutdown while the GL context is still current. */
+void shader_shutdown(void);
 
 #endif

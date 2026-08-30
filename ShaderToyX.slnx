@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="ShaderToyX/ShaderToyX.vcxproj" />
+  <Project Path="ShaderToyX/ShaderToyX.vcxproj" Id="e9c9220a-7eb4-408b-a4ae-b66009b3d1f8" />
 </Solution>

@@ -427,3 +427,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# ShaderToyX build output (build.bat)
+[Bb]uild/
