@@ -16,15 +16,19 @@ rem
 rem      "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
 rem
 rem  USAGE
-rem    build.bat            Build Debug and Release
-rem    build.bat debug      Build Debug only
-rem    build.bat release    Build Release only
-rem    build.bat all        Build Debug and Release
-rem    build.bat clean      Delete the build\ directory
+rem    build.bat                  Build Debug and Release
+rem    build.bat debug            Build Debug only
+rem    build.bat release          Build Release only
+rem    build.bat all              Build Debug and Release
+rem    build.bat package [ver]    Build Release and zip it up for distribution.
+rem                               [ver] defaults to `git describe --tags`.
+rem    build.bat clean            Delete the build\ directory
 rem
 rem  OUTPUT
 rem    build\debug\ShaderToyX.exe   (+ .pdb, obj\ intermediates)
 rem    build\release\ShaderToyX.exe (+ .pdb, obj\ intermediates)
+rem    build\ShaderToyX-<ver>-win64.zip          (package: exe + README + LICENSE)
+rem    build\ShaderToyX-<ver>-win64-symbols.zip  (package: matching .pdb)
 rem ---------------------------------------------------------------
 
 set "ROOT=%~dp0"
@@ -44,9 +48,11 @@ if /i "%MODE%"=="clean" (
     exit /b 0
 )
 
-if /i not "%MODE%"=="debug" if /i not "%MODE%"=="release" if /i not "%MODE%"=="all" (
+set "VALID="
+for %%m in (debug release all package) do if /i "%MODE%"=="%%m" set "VALID=1"
+if not defined VALID (
     echo Unknown option: %MODE%
-    echo Usage: build.bat [debug^|release^|all^|clean]
+    echo Usage: build.bat [debug^|release^|all^|package [version]^|clean]
     exit /b 1
 )
 
@@ -86,6 +92,10 @@ if /i "%MODE%"=="release" call :build release
 if /i "%MODE%"=="all" (
     call :build debug
     call :build release
+)
+if /i "%MODE%"=="package" (
+    call :build release
+    if "!FAILED!"=="0" call :package "%~2"
 )
 
 if "%FAILED%"=="1" (
@@ -129,4 +139,47 @@ cl !CFLAGS! ^
     /link !LFLAGS! %LIBS% /PDB:"%OUT%ShaderToyX.pdb"
 
 if errorlevel 1 set "FAILED=1"
+exit /b 0
+
+rem ---------------------------------------------------------------
+rem  :package [version]
+rem  Zips build\release\ShaderToyX.exe + README + LICENSE into
+rem  build\ShaderToyX-<version>-win64.zip, and the .pdb into a
+rem  matching -symbols.zip.
+rem ---------------------------------------------------------------
+:package
+set "VERSION=%~1"
+if "%VERSION%"=="" (
+    for /f "usebackq delims=" %%v in (`git -C "%ROOT%." describe --tags --always --dirty 2^>nul`) do set "VERSION=%%v"
+)
+if "%VERSION%"=="" set "VERSION=dev"
+
+set "PKG_NAME=ShaderToyX-%VERSION%-win64"
+set "STAGE=%BUILD_DIR%\%PKG_NAME%"
+set "ZIP=%BUILD_DIR%\%PKG_NAME%.zip"
+set "SYMZIP=%BUILD_DIR%\%PKG_NAME%-symbols.zip"
+
+echo.
+echo ===== Packaging %PKG_NAME%
+if exist "%STAGE%" rmdir /s /q "%STAGE%"
+mkdir "%STAGE%"
+copy /y "%BUILD_DIR%\release\ShaderToyX.exe" "%STAGE%\" >nul
+copy /y "%ROOT%README.md"                     "%STAGE%\" >nul
+copy /y "%ROOT%LICENSE"                       "%STAGE%\" >nul
+
+if exist "%ZIP%"    del /q "%ZIP%"
+if exist "%SYMZIP%" del /q "%SYMZIP%"
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%ZIP%' -CompressionLevel Optimal; " ^
+    "Compress-Archive -Path '%BUILD_DIR%\release\ShaderToyX.pdb' -DestinationPath '%SYMZIP%' -CompressionLevel Optimal"
+if errorlevel 1 (
+    echo ERROR: packaging failed.
+    set "FAILED=1"
+    exit /b 0
+)
+
+rmdir /s /q "%STAGE%"
+echo Created %ZIP%
+echo Created %SYMZIP%
 exit /b 0

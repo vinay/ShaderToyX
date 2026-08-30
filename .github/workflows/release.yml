@@ -1,0 +1,50 @@
+name: Release
+
+# Publishes a GitHub Release whenever a version tag is pushed:
+#
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# The release contains ShaderToyX-<tag>-win64.zip (exe + README + LICENSE)
+# and ShaderToyX-<tag>-win64-symbols.zip (the matching .pdb).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to create the release and upload assets
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build Release and package
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x64
+          build.bat package ${{ github.ref_name }}
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $assets = @(
+            "build/ShaderToyX-$tag-win64.zip",
+            "build/ShaderToyX-$tag-win64-symbols.zip"
+          )
+          foreach ($a in $assets) {
+            if (-not (Test-Path $a)) { throw "Missing release asset: $a" }
+          }
+          gh release create $tag @assets `
+            --title "ShaderToyX $tag" `
+            --generate-notes `
+            --verify-tag

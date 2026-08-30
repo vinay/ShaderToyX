@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# windows-latest ships Visual Studio 2026 (MSVC 14.50 / v145), which is what
+# the .vcxproj targets. build.bat itself works with any recent MSVC.
+jobs:
+  build:
+    name: Build (Windows x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # build.bat expects the x64 toolchain on PATH, exactly as a developer
+      # would set it up locally. Locate VS with vswhere and run vcvarsall.
+      - name: Build Debug and Release with build.bat
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x64
+          build.bat all
+
+      # Make sure the Visual Studio project still builds too, so IDE users
+      # are never broken by a change that only touched build.bat.
+      - name: Build with MSBuild (.vcxproj sanity check)
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x64
+          msbuild ShaderToyX\ShaderToyX.vcxproj /nologo /m /v:m /p:Configuration=Release /p:Platform=x64 /warnaserror
+
+      - name: Upload Release build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShaderToyX-win64-${{ github.sha }}
+          path: |
+            build/release/ShaderToyX.exe
+            build/release/ShaderToyX.pdb
+          if-no-files-found: error

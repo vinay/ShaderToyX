@@ -1,0 +1,16 @@
+# Normalize line endings in the repository; check out as native by default.
+* text=auto
+
+# Windows-only files must be CRLF on checkout. cmd.exe in particular
+# mishandles labels (call :foo / goto) in LF-only batch files.
+*.bat              text eol=crlf
+*.cmd              text eol=crlf
+*.slnx             text eol=crlf
+*.vcxproj          text eol=crlf
+*.vcxproj.filters  text eol=crlf
+*.manifest         text eol=crlf
+
+# Binary assets
+*.png  binary
+*.ico  binary
+*.zip  binary

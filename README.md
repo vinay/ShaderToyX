@@ -1,5 +1,8 @@
 # ShaderToyX
 
+[![CI](https://github.com/vinay/ShaderToyX/actions/workflows/ci.yml/badge.svg)](https://github.com/vinay/ShaderToyX/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/vinay/ShaderToyX?include_prereleases)](https://github.com/vinay/ShaderToyX/releases/latest)
+
 A small, native [Shadertoy](https://www.shadertoy.com)-style shader playground for Windows.
 Write a GLSL `mainImage()` function in the built-in editor, hit **F5**, and watch it run on
 your GPU — no browser, no dependencies, one executable.
@@ -28,6 +31,17 @@ five source files under `ShaderToyX/src/`.
 The **Record**, **Speaker** (sound) and **Fullscreen** toolbar buttons are present in the
 UI but not implemented yet. They currently do nothing when clicked.
 
+## Download
+
+Prebuilt 64-bit binaries are on the
+[Releases page](https://github.com/vinay/ShaderToyX/releases/latest). Download
+`ShaderToyX-<version>-win64.zip`, extract it anywhere, and run `ShaderToyX.exe`. There is no
+installer and nothing is written outside the folder you extract to. A matching
+`-symbols.zip` with the `.pdb` is attached to each release for crash analysis.
+
+ShaderToyX needs a GPU driver with OpenGL 3.3 support, which every Windows 10/11 machine
+with up-to-date graphics drivers has.
+
 ## Building
 
 **Requirements:** Windows 10 or later and the MSVC C++ toolchain (Visual Studio 2026 or the
@@ -51,11 +65,16 @@ build.bat
 build.bat            Build Debug and Release
 build.bat debug      Build Debug only        -> build\debug\ShaderToyX.exe
 build.bat release    Build Release only      -> build\release\ShaderToyX.exe
+build.bat package    Build Release and zip it -> build\ShaderToyX-<ver>-win64.zip
 build.bat clean      Delete the build\ directory
 ```
 
 The script refuses to run if `cl.exe` is missing or the toolchain on `PATH` targets
 something other than x64.
+
+`build.bat package [version]` produces the same zip files that a GitHub release contains.
+The version defaults to `git describe --tags`, so `build.bat package v0.1.0` and a plain
+`build.bat package` on a tagged commit give identical output.
 
 ### From Visual Studio
 
@@ -94,6 +113,21 @@ Compiling (F5) rebuilds every visible tab.
 - `iTimeDelta` keeps reporting the real frame time while paused.
 - Resizing the window recreates the buffers, which clears their contents.
 
+## Continuous integration and releases
+
+Every push and pull request to `master` runs the [CI workflow](.github/workflows/ci.yml)
+on a Windows runner: it builds Debug and Release with `build.bat`, builds the `.vcxproj`
+with MSBuild as a sanity check, and uploads the Release executable as a workflow artifact.
+
+Pushing a tag that starts with `v` runs the [Release workflow](.github/workflows/release.yml),
+which builds, packages with `build.bat package <tag>`, and publishes a GitHub Release with
+auto-generated notes and the two zip files attached. To cut a release:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## Project layout
 
 ```
@@ -103,7 +137,11 @@ ShaderToyX/src/
   renderer.*    Full-screen quad and ping-pong framebuffers for the buffer passes
   shader.*      Wraps user code in a Shadertoy-compatible fragment shader and links it
   gl_lite.*     Minimal OpenGL 3.3 function loader (only what the app uses)
-build.bat       Command-line build script
+ShaderToyX/
+  ShaderToyX.vcxproj    Visual Studio project (IDE builds)
+  ShaderToyX.manifest   Application manifest (per-monitor DPI awareness)
+.github/workflows/      CI and release automation
+build.bat               Command-line build and packaging script
 ```
 
 ## License
