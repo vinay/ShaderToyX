@@ -52,6 +52,15 @@ typedef struct Editor
     /* Per-tab code buffers and error logs */
     char code[NUM_TABS][EDITOR_CODE_SIZE];
     char error_log[NUM_TABS][EDITOR_ERROR_LOG_SIZE];
+
+    /* Syntax highlighting state (see editor.cpp) */
+    unsigned char hl_class[EDITOR_CODE_SIZE]; /* last applied color class per char */
+    char  hl_text[EDITOR_CODE_SIZE]; /* the text hl_class was computed for */
+    int   hl_len;            /* length of hl_text */
+    bool  hl_valid;          /* hl_class/hl_text match what the control shows */
+    bool  hl_busy;           /* recolor in progress; ignore its EN_CHANGE */
+    bool  code_rich;         /* code_edit is a RichEdit (else plain EDIT fallback) */
+    void *tom_doc;           /* ITextDocument*, used to recolor without touching undo */
     bool tab_visible[NUM_TABS]; /* which tabs are shown */
     bool needs_compile;      /* set true to recompile ALL tabs */
     bool show_editor;

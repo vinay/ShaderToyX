@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <commctrl.h>
+#include <ole2.h>
+#include <richedit.h>
+#include <richole.h>
+#include <tom.h>
 
 /* ------------------------------------------------------------------ */
 /*  Default shaders                                                   */
@@ -97,8 +101,12 @@ static const char *default_sound_shader =
 #define TAB_FONT_H     14
 #define TAB_CLOSE_W    20   /* clickable close region on buffer tabs */
 
+#define TIMER_RECOLOR   1   /* debounce timer for re-highlighting after edits */
+#define RECOLOR_DELAY  150  /* ms of typing quiet before recoloring */
+
 static const char *panel_class = "ShaderToyX_EditorPanel";
 static bool panel_class_registered = false;
+static HMODULE msftedit_dll = NULL;
 
 static const char *tab_names[NUM_TABS] = { "Image", "Buf A", "Buf B", "Buf C", "Buf D", "Sound" };
 
@@ -106,6 +114,636 @@ static const char *tab_names[NUM_TABS] = { "Image", "Buf A", "Buf B", "Buf C", "
 static int sc(const Editor *e, int v)
 {
     return MulDiv(v, e->dpi, 96);
+}
+
+/* ================================================================== */
+/*  GLSL syntax highlighting                                          */
+/*                                                                    */
+/*  A single-pass lexer assigns every character a color class; the    */
+/*  classes are applied to the RichEdit control through TOM ranges    */
+/*  (so the user's undo stack is untouched), diffed against the last  */
+/*  applied classes so steady-state typing only recolors what changed.*/
+/* ================================================================== */
+
+enum
+{
+    HL_DEFAULT = 0,  /* identifiers, operators, punctuation */
+    HL_COMMENT,
+    HL_PREPROC,
+    HL_KEYWORD,
+    HL_TYPE,
+    HL_BUILTIN,      /* built-in functions */
+    HL_STVAR,        /* Shadertoy/GLSL built-in variables and entry points */
+    HL_NUMBER,
+    HL_CLASS_COUNT
+};
+
+static const COLORREF hl_colors[HL_CLASS_COUNT] =
+{
+    RGB(220, 220, 220),  /* HL_DEFAULT */
+    RGB(106, 153,  85),  /* HL_COMMENT */
+    RGB(197, 134, 192),  /* HL_PREPROC */
+    RGB(198, 120, 221),  /* HL_KEYWORD */
+    RGB( 97, 175, 239),  /* HL_TYPE (the tab-accent blue) */
+    RGB( 86, 182, 194),  /* HL_BUILTIN */
+    RGB(224, 108, 117),  /* HL_STVAR */
+    RGB(209, 154, 102),  /* HL_NUMBER */
+};
+
+static const char *hl_keywords[] =
+{
+    "break", "case", "const", "continue", "default", "discard", "do", "else",
+    "false", "flat", "for", "highp", "if", "in", "inout", "invariant",
+    "layout", "lowp", "mediump", "out", "precision", "return", "smooth",
+    "struct", "switch", "true", "uniform", "while",
+};
+
+static const char *hl_types[] =
+{
+    "void", "bool", "int", "uint", "float", "double",
+    "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+    "uvec2", "uvec3", "uvec4", "bvec2", "bvec3", "bvec4",
+    "mat2", "mat3", "mat4",
+    "mat2x2", "mat2x3", "mat2x4", "mat3x2", "mat3x3", "mat3x4",
+    "mat4x2", "mat4x3", "mat4x4",
+    "sampler1D", "sampler2D", "sampler3D", "samplerCube",
+    "sampler2DArray", "sampler2DShadow", "samplerCubeShadow",
+    "isampler2D", "usampler2D",
+};
+
+static const char *hl_builtins[] =
+{
+    "abs", "acos", "acosh", "all", "any", "asin", "asinh", "atan", "atanh",
+    "ceil", "clamp", "cos", "cosh", "cross", "degrees", "determinant",
+    "dFdx", "dFdy", "distance", "dot", "equal", "exp", "exp2", "faceforward",
+    "floor", "fract", "fwidth", "greaterThan", "greaterThanEqual", "inverse",
+    "inversesqrt", "isinf", "isnan", "length", "lessThan", "lessThanEqual",
+    "log", "log2", "matrixCompMult", "max", "min", "mix", "mod", "modf",
+    "normalize", "not", "notEqual", "outerProduct", "pow", "radians",
+    "reflect", "refract", "round", "roundEven", "sign", "sin", "sinh",
+    "smoothstep", "sqrt", "step", "tan", "tanh", "texelFetch", "texture",
+    "textureGrad", "textureLod", "textureProj", "textureSize", "transpose",
+    "trunc",
+};
+
+static const char *hl_stvars[] =
+{
+    "iResolution", "iTime", "iTimeDelta", "iFrame", "iMouse", "iDate",
+    "iSampleRate", "iChannelTime", "iChannelResolution",
+    "iChannel0", "iChannel1", "iChannel2", "iChannel3",
+    "mainImage", "mainSound", "gl_FragCoord", "gl_FragDepth",
+};
+
+static bool hl_in_list(const char *w, int len, const char **list, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (strncmp(list[i], w, len) == 0 && list[i][len] == '\0')
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static unsigned char hl_classify(const char *w, int len)
+{
+    #define HL_LIST(t) t, (int)(sizeof(t) / sizeof((t)[0]))
+    if (hl_in_list(w, len, HL_LIST(hl_keywords))) return HL_KEYWORD;
+    if (hl_in_list(w, len, HL_LIST(hl_types)))    return HL_TYPE;
+    if (hl_in_list(w, len, HL_LIST(hl_builtins))) return HL_BUILTIN;
+    if (hl_in_list(w, len, HL_LIST(hl_stvars)))   return HL_STVAR;
+    #undef HL_LIST
+    return HL_DEFAULT;
+}
+
+static bool hl_ident_start(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static bool hl_ident_char(char c)
+{
+    return hl_ident_start(c) || (c >= '0' && c <= '9');
+}
+
+static bool hl_digit(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+/* Assign a color class to every character of s[0..n) */
+static void hl_lex(const char *s, int n, unsigned char *cls)
+{
+    int  i = 0;
+    bool line_start = true;  /* only whitespace seen since the last newline */
+
+    while (i < n)
+    {
+        char c = s[i];
+
+        if (c == '\r' || c == '\n')
+        {
+            cls[i++] = HL_DEFAULT;
+            line_start = true;
+            continue;
+        }
+        if (c == ' ' || c == '\t')
+        {
+            cls[i++] = HL_DEFAULT;
+            continue;
+        }
+
+        /* Line comment */
+        if (c == '/' && i + 1 < n && s[i + 1] == '/')
+        {
+            while (i < n && s[i] != '\r' && s[i] != '\n')
+            {
+                cls[i++] = HL_COMMENT;
+            }
+            continue;
+        }
+
+        /* Block comment */
+        if (c == '/' && i + 1 < n && s[i + 1] == '*')
+        {
+            cls[i++] = HL_COMMENT;
+            cls[i++] = HL_COMMENT;
+            while (i < n && !(s[i] == '*' && i + 1 < n && s[i + 1] == '/'))
+            {
+                cls[i++] = HL_COMMENT;
+            }
+            if (i < n)
+            {
+                cls[i++] = HL_COMMENT;
+                cls[i++] = HL_COMMENT;
+            }
+            line_start = false;
+            continue;
+        }
+
+        /* Preprocessor line (comments on such lines are not sub-lexed) */
+        if (c == '#' && line_start)
+        {
+            while (i < n && s[i] != '\r' && s[i] != '\n')
+            {
+                cls[i++] = HL_PREPROC;
+            }
+            continue;
+        }
+
+        /* Number: ints, floats, hex, exponents, suffixes */
+        if (hl_digit(c) || (c == '.' && i + 1 < n && hl_digit(s[i + 1])))
+        {
+            while (i < n)
+            {
+                char d = s[i];
+                if (hl_ident_char(d) || d == '.')
+                {
+                    cls[i++] = HL_NUMBER;
+                    continue;
+                }
+                if ((d == '+' || d == '-') && (s[i - 1] == 'e' || s[i - 1] == 'E'))
+                {
+                    cls[i++] = HL_NUMBER;
+                    continue;
+                }
+                break;
+            }
+            line_start = false;
+            continue;
+        }
+
+        /* Identifier / keyword */
+        if (hl_ident_start(c))
+        {
+            int start = i;
+            while (i < n && hl_ident_char(s[i]))
+            {
+                i++;
+            }
+            unsigned char k = hl_classify(s + start, i - start);
+            for (int j = start; j < i; j++)
+            {
+                cls[j] = k;
+            }
+            line_start = false;
+            continue;
+        }
+
+        cls[i++] = HL_DEFAULT;
+        line_start = false;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Fetch the code text with RichEdit-native line ends (a lone CR per */
+/*  paragraph), so byte indices match the control's character indices */
+/*  for TOM ranges and EM_EXGETSEL positions.                         */
+/* ------------------------------------------------------------------ */
+static int fetch_code_text(Editor *e, char *buf, int size)
+{
+    GETTEXTEX gt = {};
+    gt.cb       = (DWORD)size;
+    gt.flags    = GT_DEFAULT;
+    gt.codepage = CP_ACP;
+    int len = (int)SendMessageA(e->code_edit, EM_GETTEXTEX, (WPARAM)&gt, (LPARAM)buf);
+    if (len < 0)
+    {
+        len = 0;
+    }
+    buf[len] = '\0';
+    return len;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Re-lex the buffer and apply color changes to the control.         */
+/*  Runs with undo suspended and the display frozen; only ranges      */
+/*  whose class differs from the last applied pass are touched.       */
+/* ------------------------------------------------------------------ */
+static void editor_recolor(Editor *e)
+{
+    ITextDocument *doc = (ITextDocument *)e->tom_doc;
+    if (!doc)
+    {
+        return;
+    }
+
+    static char          text[EDITOR_CODE_SIZE];
+    static unsigned char cls[EDITOR_CODE_SIZE];
+    int len = fetch_code_text(e, text, sizeof(text));
+    hl_lex(text, len, cls);
+
+    /* The cache is indexed by character position, but edits shift text
+       around while its colors travel along with the characters. Map the
+       cache through the edit: the unchanged prefix and suffix keep their
+       cached classes (the suffix shifted into place), and the edited
+       middle — whose characters inherited whatever color sat at the
+       insertion point — is marked unknown so it is always repainted. */
+    #define HL_UNKNOWN 0xFF
+    if (e->hl_valid)
+    {
+        int old_len = e->hl_len;
+        int max_common = (old_len < len) ? old_len : len;
+
+        int prefix = 0;
+        while (prefix < max_common && text[prefix] == e->hl_text[prefix])
+        {
+            prefix++;
+        }
+
+        int suffix = 0;
+        while (suffix < max_common - prefix &&
+               text[len - 1 - suffix] == e->hl_text[old_len - 1 - suffix])
+        {
+            suffix++;
+        }
+
+        memmove(&e->hl_class[len - suffix], &e->hl_class[old_len - suffix],
+                (size_t)suffix);
+        memset(&e->hl_class[prefix], HL_UNKNOWN, (size_t)(len - suffix - prefix));
+    }
+
+    e->hl_busy = true;
+    long freeze_count = 0;
+    doc->Undo(tomSuspend, NULL);
+    doc->Freeze(&freeze_count);
+
+    int i = 0;
+    while (i < len)
+    {
+        if (e->hl_valid && e->hl_class[i] == cls[i])
+        {
+            i++;
+            continue;
+        }
+
+        int start = i;
+        unsigned char k = cls[i];
+        while (i < len && cls[i] == k && !(e->hl_valid && e->hl_class[i] == k))
+        {
+            i++;
+        }
+
+        ITextRange *range = NULL;
+        if (SUCCEEDED(doc->Range(start, i, &range)) && range)
+        {
+            ITextFont *font = NULL;
+            if (SUCCEEDED(range->GetFont(&font)) && font)
+            {
+                font->SetForeColor((long)hl_colors[k]);
+                font->Release();
+            }
+            range->Release();
+        }
+    }
+
+    memcpy(e->hl_class, cls, (size_t)len);
+    memcpy(e->hl_text, text, (size_t)len + 1);
+    e->hl_len   = len;
+    e->hl_valid = true;
+
+    doc->Unfreeze(&freeze_count);
+    doc->Undo(tomResume, NULL);
+    e->hl_busy = false;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Tab stops every 4 columns of the mono font. RichEdit ignores      */
+/*  EM_SETTABSTOPS, so this goes through PARAFORMAT2 (in twips).      */
+/* ------------------------------------------------------------------ */
+static void apply_code_tab_stops(Editor *e)
+{
+    if (!e->code_rich)
+    {
+        return; /* the EDIT fallback got EM_SETTABSTOPS at creation */
+    }
+
+    HDC dc = GetDC(e->code_edit);
+    HGDIOBJ old_font = SelectObject(dc, e->mono_font);
+    TEXTMETRICA tm = {};
+    GetTextMetricsA(dc, &tm);
+    SelectObject(dc, old_font);
+    ReleaseDC(e->code_edit, dc);
+
+    LONG tab_twips = MulDiv(tm.tmAveCharWidth * 4, 1440, e->dpi);
+    if (tab_twips < 1)
+    {
+        tab_twips = 720;
+    }
+
+    PARAFORMAT2 pf = {};
+    pf.cbSize    = sizeof(pf);
+    pf.dwMask    = PFM_TABSTOPS;
+    pf.cTabCount = MAX_TAB_STOPS;
+    for (int i = 0; i < MAX_TAB_STOPS; i++)
+    {
+        pf.rgxTabs[i] = (i + 1) * tab_twips;
+    }
+
+    ITextDocument *doc = (ITextDocument *)e->tom_doc;
+    long freeze_count = 0;
+    if (doc)
+    {
+        doc->Undo(tomSuspend, NULL);
+        doc->Freeze(&freeze_count);
+    }
+
+    CHARRANGE save;
+    SendMessageA(e->code_edit, EM_EXGETSEL, 0, (LPARAM)&save);
+    SendMessageA(e->code_edit, EM_SETSEL, 0, -1);
+    SendMessageA(e->code_edit, EM_SETPARAFORMAT, 0, (LPARAM)&pf);
+    SendMessageA(e->code_edit, EM_EXSETSEL, 0, (LPARAM)&save);
+
+    if (doc)
+    {
+        doc->Unfreeze(&freeze_count);
+        doc->Undo(tomResume, NULL);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Replace the control's text (tab switch / init) and re-highlight   */
+/* ------------------------------------------------------------------ */
+static void set_code_text(Editor *e, const char *text)
+{
+    SetWindowTextA(e->code_edit, text);
+    e->hl_valid = false;
+    apply_code_tab_stops(e);
+    editor_recolor(e);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Auto-indent: Enter copies the current line's leading whitespace,  */
+/*  plus one tab if the line so far ends with an open brace.          */
+/* ------------------------------------------------------------------ */
+static void code_auto_indent(Editor *e)
+{
+    static char text[EDITOR_CODE_SIZE];
+    int len = fetch_code_text(e, text, sizeof(text));
+
+    CHARRANGE cr;
+    SendMessageA(e->code_edit, EM_EXGETSEL, 0, (LPARAM)&cr);
+    int pos = cr.cpMin;
+    if (pos > len)
+    {
+        pos = len;
+    }
+
+    int line_start = pos;
+    while (line_start > 0 &&
+           text[line_start - 1] != '\r' && text[line_start - 1] != '\n')
+    {
+        line_start--;
+    }
+
+    char ins[256];
+    int  k = 0;
+    ins[k++] = '\r';
+    for (int i = line_start;
+         i < pos && k < (int)sizeof(ins) - 2 &&
+         (text[i] == ' ' || text[i] == '\t');
+         i++)
+    {
+        ins[k++] = text[i];
+    }
+
+    char last = 0;
+    for (int i = line_start; i < pos; i++)
+    {
+        if (text[i] != ' ' && text[i] != '\t')
+        {
+            last = text[i];
+        }
+    }
+    if (last == '{')
+    {
+        ins[k++] = '\t';
+    }
+    ins[k] = '\0';
+
+    SendMessageA(e->code_edit, EM_REPLACESEL, TRUE, (LPARAM)ins);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Format document: a re-indenter. Only each line's leading          */
+/*  whitespace is rewritten (tabs, from brace depth); the text itself */
+/*  is never altered, so it cannot mangle code. Lines inside block    */
+/*  comments are left untouched; preprocessor lines go to column 0;   */
+/*  lines inside unclosed parens get one extra level.                 */
+/* ------------------------------------------------------------------ */
+static bool format_glsl(const char *src, int len, char *dst, int dst_size)
+{
+    int  di = 0, i = 0;
+    int  depth = 0, paren = 0;
+    bool in_block = false;
+
+    while (i < len)
+    {
+        int line_end = i;
+        while (line_end < len && src[line_end] != '\r' && src[line_end] != '\n')
+        {
+            line_end++;
+        }
+
+        int cs = i; /* content start */
+        while (cs < line_end && (src[cs] == ' ' || src[cs] == '\t'))
+        {
+            cs++;
+        }
+        int ce = line_end; /* content end, trailing whitespace trimmed */
+        while (ce > cs && (src[ce - 1] == ' ' || src[ce - 1] == '\t'))
+        {
+            ce--;
+        }
+
+        bool was_in_block = in_block;
+        if (was_in_block)
+        {
+            /* Keep block-comment interiors exactly as written */
+            for (int j = i; j < line_end && di < dst_size - 1; j++)
+            {
+                dst[di++] = src[j];
+            }
+        }
+        else if (cs < ce)
+        {
+            int ind;
+            if (src[cs] == '#')
+            {
+                ind = 0;
+            }
+            else
+            {
+                ind = depth + (paren > 0 ? 1 : 0);
+                for (int j = cs; j < ce && src[j] == '}'; j++)
+                {
+                    ind--;
+                }
+                if (ind < 0)
+                {
+                    ind = 0;
+                }
+            }
+            for (int t = 0; t < ind && di < dst_size - 1; t++)
+            {
+                dst[di++] = '\t';
+            }
+            for (int j = cs; j < ce && di < dst_size - 1; j++)
+            {
+                dst[di++] = src[j];
+            }
+        }
+        /* blank line: emit nothing before the terminator */
+
+        /* Update brace/paren/comment state from this line's code */
+        {
+            bool preproc = (!was_in_block && cs < ce && src[cs] == '#');
+            int  j = was_in_block ? i : cs;
+            while (j < line_end)
+            {
+                if (in_block)
+                {
+                    if (src[j] == '*' && j + 1 < line_end && src[j + 1] == '/')
+                    {
+                        in_block = false;
+                        j += 2;
+                        continue;
+                    }
+                    j++;
+                    continue;
+                }
+                if (src[j] == '/' && j + 1 < line_end && src[j + 1] == '/')
+                {
+                    break;
+                }
+                if (src[j] == '/' && j + 1 < line_end && src[j + 1] == '*')
+                {
+                    in_block = true;
+                    j += 2;
+                    continue;
+                }
+                if (!preproc)
+                {
+                    if      (src[j] == '{') depth++;
+                    else if (src[j] == '}') { if (depth > 0) depth--; }
+                    else if (src[j] == '(') paren++;
+                    else if (src[j] == ')') { if (paren > 0) paren--; }
+                }
+                j++;
+            }
+        }
+
+        if (line_end < len)
+        {
+            if (di < dst_size - 1)
+            {
+                dst[di++] = '\r';
+            }
+            i = line_end + 1;
+            if (src[line_end] == '\r' && i < len && src[i] == '\n')
+            {
+                i++;
+            }
+        }
+        else
+        {
+            i = line_end;
+        }
+
+        if (di >= dst_size - 1)
+        {
+            return false;
+        }
+    }
+
+    dst[di] = '\0';
+    return true;
+}
+
+static void editor_format_document(Editor *e)
+{
+    static char src[EDITOR_CODE_SIZE];
+    static char dst[EDITOR_CODE_SIZE];
+
+    int len = fetch_code_text(e, src, sizeof(src));
+    if (len <= 0)
+    {
+        return;
+    }
+    if (!format_glsl(src, len, dst, sizeof(dst)))
+    {
+        return;
+    }
+    if (strcmp(src, dst) == 0)
+    {
+        return;
+    }
+
+    /* Remember the caret's line so it can be restored afterwards */
+    CHARRANGE cr;
+    SendMessageA(e->code_edit, EM_EXGETSEL, 0, (LPARAM)&cr);
+    int line = (int)SendMessageA(e->code_edit, EM_EXLINEFROMCHAR, 0, cr.cpMin);
+
+    /* Replace everything as one undoable action */
+    SendMessageA(e->code_edit, EM_SETSEL, 0, -1);
+    SendMessageA(e->code_edit, EM_REPLACESEL, TRUE, (LPARAM)dst);
+
+    int line_count = (int)SendMessageA(e->code_edit, EM_GETLINECOUNT, 0, 0);
+    if (line >= line_count)
+    {
+        line = line_count - 1;
+    }
+    int pos = (int)SendMessageA(e->code_edit, EM_LINEINDEX, line, 0);
+    if (pos < 0)
+    {
+        pos = 0;
+    }
+    SendMessageA(e->code_edit, EM_SETSEL, pos, pos);
+    SendMessageA(e->code_edit, EM_SCROLLCARET, 0, 0);
+
+    e->hl_valid = false;
+    editor_recolor(e);
 }
 
 /* ------------------------------------------------------------------ */
@@ -129,18 +767,52 @@ static void add_tooltip(HWND parent, HWND control, HINSTANCE hInst, const char *
 }
 
 /* ------------------------------------------------------------------ */
-/*  Subclass proc for the EDIT controls — handles Ctrl+A              */
+/*  Subclass proc for the code and error controls: Ctrl+A everywhere; */
+/*  on the RichEdit code control also auto-indent (Enter), format     */
+/*  document (Ctrl+Shift+F) and plain-text paste.                     */
 /* ------------------------------------------------------------------ */
-static WNDPROC g_orig_edit_proc = NULL;
+static WNDPROC g_orig_code_proc  = NULL;
+static WNDPROC g_orig_error_proc = NULL;
 
 static LRESULT CALLBACK edit_subclass_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    if (msg == WM_KEYDOWN && wParam == 'A' && (GetKeyState(VK_CONTROL) & 0x8000))
+    Editor *e = (Editor *)GetWindowLongPtrA(GetParent(hwnd), GWLP_USERDATA);
+    bool is_code = e && hwnd == e->code_edit;
+    bool ctrl    = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    bool shift   = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+
+    if (msg == WM_KEYDOWN && wParam == 'A' && ctrl)
     {
         SendMessageA(hwnd, EM_SETSEL, 0, -1);
         return 0;
     }
-    return CallWindowProcA(g_orig_edit_proc, hwnd, msg, wParam, lParam);
+
+    if (is_code && e->code_rich)
+    {
+        /* Paste as plain text so clipboard RTF cannot change formatting */
+        if (msg == WM_PASTE ||
+            (msg == WM_KEYDOWN && wParam == 'V' && ctrl) ||
+            (msg == WM_KEYDOWN && wParam == VK_INSERT && shift))
+        {
+            SendMessageA(hwnd, EM_PASTESPECIAL, CF_UNICODETEXT, 0);
+            return 0;
+        }
+
+        if (msg == WM_KEYDOWN && wParam == 'F' && ctrl && shift)
+        {
+            editor_format_document(e);
+            return 0;
+        }
+
+        if (msg == WM_CHAR && wParam == '\r')
+        {
+            code_auto_indent(e);
+            return 0;
+        }
+    }
+
+    WNDPROC orig = is_code ? g_orig_code_proc : g_orig_error_proc;
+    return CallWindowProcA(orig, hwnd, msg, wParam, lParam);
 }
 
 /* ------------------------------------------------------------------ */
@@ -388,6 +1060,16 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             int id = LOWORD(wParam);
             int notify = HIWORD(wParam);
 
+            /* Re-highlight shortly after the code text changes */
+            if (id == IDC_CODE_EDIT && notify == EN_CHANGE)
+            {
+                if (!e->hl_busy)
+                {
+                    SetTimer(hwnd, TIMER_RECOLOR, RECOLOR_DELAY, NULL);
+                }
+                return 0;
+            }
+
             if (id == IDC_COMPILE_BTN && notify == BN_CLICKED)
             {
                 editor_sync_from_control(e);
@@ -453,6 +1135,18 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
 
             /* IDC_REC_BTN: not implemented yet */
+        }
+        break;
+
+    case WM_TIMER:
+        if (wParam == TIMER_RECOLOR)
+        {
+            KillTimer(hwnd, TIMER_RECOLOR);
+            if (e)
+            {
+                editor_recolor(e);
+            }
+            return 0;
         }
         break;
 
@@ -685,16 +1379,58 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
     }
     e->add_tab_btn = create_child(e->panel, hInstance, "BUTTON", "+", odbtn, 0, IDC_ADD_TAB_BTN);
 
-    /* Code editor (multiline EDIT) */
-    e->code_edit = create_child(e->panel, hInstance, "EDIT", e->code[TAB_IMAGE],
+    /* Code editor: a RichEdit for syntax colors, with a plain EDIT
+       fallback if Msftedit.dll is somehow unavailable */
+    const DWORD code_style =
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL |
-        ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN,
-        WS_EX_CLIENTEDGE, IDC_CODE_EDIT);
+        ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_WANTRETURN;
+
+    if (!msftedit_dll)
+    {
+        msftedit_dll = LoadLibraryA("Msftedit.dll");
+    }
+    e->code_edit = NULL;
+    if (msftedit_dll)
+    {
+        e->code_edit = create_child(e->panel, hInstance, "RICHEDIT50W", "",
+                                    code_style | ES_NOOLEDRAGDROP,
+                                    WS_EX_CLIENTEDGE, IDC_CODE_EDIT);
+    }
+    e->code_rich = (e->code_edit != NULL);
+    if (!e->code_edit)
+    {
+        e->code_edit = create_child(e->panel, hInstance, "EDIT", "",
+                                    code_style, WS_EX_CLIENTEDGE, IDC_CODE_EDIT);
+    }
+
+    if (e->code_rich)
+    {
+        SendMessageA(e->code_edit, EM_SETEVENTMASK, 0, ENM_CHANGE);
+        SendMessageA(e->code_edit, EM_SETBKGNDCOLOR, 0, (LPARAM)RGB(30, 30, 30));
+        SendMessageA(e->code_edit, EM_EXLIMITTEXT, 0, EDITOR_CODE_SIZE - 1);
+
+        /* Keep the IME from silently switching fonts */
+        LRESULT lang = SendMessageA(e->code_edit, EM_GETLANGOPTIONS, 0, 0);
+        SendMessageA(e->code_edit, EM_SETLANGOPTIONS, 0, lang & ~IMF_AUTOFONT);
+
+        /* TOM interface: recoloring goes through it so highlighting can
+           run with undo suspended and the display frozen */
+        IUnknown *unk = NULL;
+        SendMessageA(e->code_edit, EM_GETOLEINTERFACE, 0, (LPARAM)&unk);
+        if (unk)
+        {
+            ITextDocument *doc = NULL;
+            unk->QueryInterface(__uuidof(ITextDocument), (void **)&doc);
+            e->tom_doc = doc;
+            unk->Release();
+        }
+    }
+    else
     {
         int tab_stop = 16; /* dialog units, so not DPI-dependent */
         SendMessageA(e->code_edit, EM_SETTABSTOPS, 1, (LPARAM)&tab_stop);
+        SendMessageA(e->code_edit, EM_SETLIMITTEXT, EDITOR_CODE_SIZE - 1, 0);
     }
-    SendMessageA(e->code_edit, EM_SETLIMITTEXT, EDITOR_CODE_SIZE - 1, 0);
 
     /* Error log (read-only EDIT) */
     e->error_edit = create_child(e->panel, hInstance, "EDIT", "",
@@ -702,11 +1438,25 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
         ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
         WS_EX_CLIENTEDGE, IDC_ERROR_EDIT);
 
-    /* Subclass edit controls so Ctrl+A works (both share the EDIT class proc) */
-    g_orig_edit_proc = (WNDPROC)SetWindowLongPtrA(e->code_edit, GWLP_WNDPROC, (LONG_PTR)edit_subclass_proc);
-    SetWindowLongPtrA(e->error_edit, GWLP_WNDPROC, (LONG_PTR)edit_subclass_proc);
+    /* Subclass both text controls (Ctrl+A, and the code editor's
+       auto-indent / format / plain-paste handling) */
+    g_orig_code_proc  = (WNDPROC)SetWindowLongPtrA(e->code_edit,  GWLP_WNDPROC, (LONG_PTR)edit_subclass_proc);
+    g_orig_error_proc = (WNDPROC)SetWindowLongPtrA(e->error_edit, GWLP_WNDPROC, (LONG_PTR)edit_subclass_proc);
 
     create_fonts(e);
+
+    if (e->code_rich)
+    {
+        /* Default text color for freshly typed characters (recolor
+           passes then refine it) */
+        CHARFORMAT2A cf = {};
+        cf.cbSize      = sizeof(cf);
+        cf.dwMask      = CFM_COLOR;
+        cf.crTextColor = hl_colors[HL_DEFAULT];
+        SendMessageA(e->code_edit, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+    }
+
+    set_code_text(e, e->code[TAB_IMAGE]);
     editor_layout(e);
     refresh_error_display(e);
 }
@@ -714,6 +1464,11 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
 /* ------------------------------------------------------------------ */
 void editor_destroy(Editor *e)
 {
+    if (e->tom_doc)
+    {
+        ((ITextDocument *)e->tom_doc)->Release();
+        e->tom_doc = NULL;
+    }
     if (e->panel)
     {
         DestroyWindow(e->panel);
@@ -763,6 +1518,13 @@ void editor_set_dpi(Editor *e, int dpi)
     }
     e->dpi = dpi;
     create_fonts(e);
+
+    /* The font size changed: recompute tab stops and re-apply colors
+       (WM_SETFONT reformats the whole document) */
+    apply_code_tab_stops(e);
+    e->hl_valid = false;
+    editor_recolor(e);
+
     editor_layout(e);
     InvalidateRect(e->panel, NULL, TRUE);
 }
@@ -913,8 +1675,8 @@ void editor_switch_tab(Editor *e, int tab)
     /* Switch */
     e->active_tab = tab;
 
-    /* Load new tab's text into the EDIT control */
-    SetWindowTextA(e->code_edit, e->code[tab]);
+    /* Load new tab's text into the code control and re-highlight */
+    set_code_text(e, e->code[tab]);
 
     update_tab_visuals(e);
     refresh_error_display(e);

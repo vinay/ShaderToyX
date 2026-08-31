@@ -19,6 +19,9 @@ five source files under `ShaderToyX/src/`.
 - Live GLSL editing with the same entry point and uniforms as Shadertoy
   (`mainImage`, `iResolution`, `iTime`, `iTimeDelta`, `iFrame`, `iMouse`, `iDate`,
   `iSampleRate`, `iChannelTime`, `iChannelResolution`, `iChannel0`–`iChannel3`)
+- GLSL syntax highlighting, auto-indent on Enter, and a brace-based
+  re-indenter (**Ctrl+Shift+F**) — built on the stock Windows RichEdit
+  control, no third-party editor component
 - Multi-pass rendering: an **Image** tab plus up to four **Buffer** tabs (A–D),
   each backed by a ping-pong pair of RGBA16F framebuffers
 - **Sound shaders**: a Sound tab with Shadertoy's `mainSound()` entry point,
@@ -93,6 +96,7 @@ Debug builds request a debug OpenGL context and log driver messages to the Visua
 | Action | How |
 | --- | --- |
 | Compile the current shader | **F5** or the **Compile** button |
+| Re-indent the current tab | **Ctrl+Shift+F** (rewrites leading whitespace only) |
 | Show / hide the editor panel | **F1** |
 | Enter / leave fullscreen | **F11** or the fullscreen button; **Esc** leaves |
 | Add a buffer or sound pass | The **+** button on the tab bar opens a menu |
@@ -104,6 +108,12 @@ Debug builds request a debug OpenGL context and log driver messages to the Visua
 
 The editor panel keeps a separate source buffer and error log for each tab.
 Compiling (F5) rebuilds every visible tab.
+
+The re-indenter is deliberately conservative: it only rewrites each line's
+leading whitespace from brace/paren depth (block-comment interiors are left
+alone, preprocessor lines go to column 0), so it can never alter the code
+itself. One consequence: single-statement `if`/`else` bodies without braces
+are flattened to the surrounding depth.
 
 ### Shadertoy compatibility notes
 
@@ -147,7 +157,7 @@ git push origin v0.1.0
 ```
 ShaderToyX/src/
   main.cpp      Win32 window, OpenGL context, main loop, uniform setup
-  editor.*      Editor panel: tabs, code/error boxes, toolbar (pure Win32 controls)
+  editor.*      Editor panel: tabs, toolbar, RichEdit code box with GLSL highlighting
   renderer.*    Full-screen quad and ping-pong framebuffers for the buffer passes
   audio.*       WASAPI playback for sound shaders (shared-mode render stream)
   shader.*      Wraps user code in a Shadertoy-compatible fragment shader and links it

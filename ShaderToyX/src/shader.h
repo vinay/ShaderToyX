@@ -21,6 +21,7 @@
 
 typedef struct ShaderUniforms
 {
+
     float iResolution[3];
     float iTime;
     float iTimeDelta;
