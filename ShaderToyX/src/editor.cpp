@@ -920,18 +920,26 @@ static void draw_icon_button(Editor *e, DRAWITEMSTRUCT *dis)
         DeleteObject(np);
     }
 
-    /* Record button: filled red circle */
+    /* Record button: filled red circle; a red stop square while recording */
     if (dis->CtlID == IDC_REC_BTN)
     {
         HBRUSH rb = CreateSolidBrush(RGB(200, 60, 60));
-        HPEN rp = CreatePen(PS_SOLID, 1, RGB(200, 60, 60));
-        HGDIOBJ ob = SelectObject(dis->hDC, rb);
-        HGDIOBJ op = SelectObject(dis->hDC, rp);
-        Ellipse(dis->hDC, cx - sc(e, 5), cy - sc(e, 5), cx + sc(e, 5), cy + sc(e, 5));
-        SelectObject(dis->hDC, ob);
-        SelectObject(dis->hDC, op);
+        if (e->recording)
+        {
+            RECT sq = { cx - sc(e, 5), cy - sc(e, 5), cx + sc(e, 5), cy + sc(e, 5) };
+            FillRect(dis->hDC, &sq, rb);
+        }
+        else
+        {
+            HPEN rp = CreatePen(PS_SOLID, 1, RGB(200, 60, 60));
+            HGDIOBJ ob = SelectObject(dis->hDC, rb);
+            HGDIOBJ op = SelectObject(dis->hDC, rp);
+            Ellipse(dis->hDC, cx - sc(e, 5), cy - sc(e, 5), cx + sc(e, 5), cy + sc(e, 5));
+            SelectObject(dis->hDC, ob);
+            SelectObject(dis->hDC, op);
+            DeleteObject(rp);
+        }
         DeleteObject(rb);
-        DeleteObject(rp);
     }
 
     /* Speaker button: speaker cone + sound waves */
@@ -1134,7 +1142,11 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            /* IDC_REC_BTN: not implemented yet */
+            if (id == IDC_REC_BTN && notify == BN_CLICKED)
+            {
+                e->toggle_record = true;
+                return 0;
+            }
         }
         break;
 
@@ -1367,7 +1379,7 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
 
     add_tooltip(e->panel, e->pause_btn,   hInstance, "Pause / Resume");
     add_tooltip(e->panel, e->reset_btn,   hInstance, "Reset Time");
-    add_tooltip(e->panel, e->rec_btn,     hInstance, "Record (not implemented yet)");
+    add_tooltip(e->panel, e->rec_btn,     hInstance, "Record MP4 (saved next to the exe)");
     add_tooltip(e->panel, e->speaker_btn, hInstance, "Sound On/Off");
     add_tooltip(e->panel, e->fullscr_btn, hInstance, "Fullscreen (F11, Esc to exit)");
 
@@ -1504,6 +1516,16 @@ void editor_set_fullscreen(Editor *e, bool fullscreen)
 }
 
 /* ------------------------------------------------------------------ */
+void editor_set_recording(Editor *e, bool recording)
+{
+    if (e->recording != recording)
+    {
+        e->recording = recording;
+        InvalidateRect(e->rec_btn, NULL, TRUE);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 int editor_panel_width(const Editor *e)
 {
     return e->show_editor ? sc(e, EDITOR_PANEL_W) : 0;
@@ -1610,11 +1632,22 @@ void editor_layout(Editor *e)
 }
 
 /* ------------------------------------------------------------------ */
-void editor_update(Editor *e, float elapsed_time, float fps, int canvas_w, int canvas_h)
+void editor_update(Editor *e, float elapsed_time, float fps, int canvas_w, int canvas_h,
+                   float rec_time)
 {
     /* FPS label with dimensions — only touch the control when the text changes */
     char buf[96];
-    snprintf(buf, sizeof(buf), "%.0f FPS | %.1fs | %dx%d", fps, elapsed_time, canvas_w, canvas_h);
+    if (rec_time >= 0.0f)
+    {
+        snprintf(buf, sizeof(buf), "REC %d:%02d | %.0f FPS | %.1fs | %dx%d",
+                 (int)rec_time / 60, (int)rec_time % 60,
+                 fps, elapsed_time, canvas_w, canvas_h);
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "%.0f FPS | %.1fs | %dx%d",
+                 fps, elapsed_time, canvas_w, canvas_h);
+    }
     if (strcmp(buf, e->shown_fps) != 0)
     {
         strncpy(e->shown_fps, buf, sizeof(e->shown_fps) - 1);

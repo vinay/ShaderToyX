@@ -29,14 +29,11 @@ five source files under `ShaderToyX/src/`.
   the speaker toolbar button mutes/unmutes
 - Compile errors shown per tab, with line numbers matching your code
 - Pause / resume and reset-time controls, FPS and resolution readout
+- One-click **MP4 recording** of the canvas (H.264 + AAC via Media Foundation,
+  hardware-encoded where available) — no capture software needed
 - Per-monitor DPI aware
 - Toggle the editor panel with **F1** for a full-window canvas
 - Borderless fullscreen with **F11** or the fullscreen button (**Esc** to exit)
-
-### Work in progress
-
-The **Record** toolbar button is present in the UI but not implemented yet.
-It currently does nothing when clicked.
 
 ## Download
 
@@ -102,12 +99,21 @@ Debug builds request a debug OpenGL context and log driver messages to the Visua
 | Add a buffer or sound pass | The **+** button on the tab bar opens a menu |
 | Remove a buffer or sound pass | The **x** on the tab |
 | Mute / unmute sound | The speaker button |
+| Record the canvas to MP4 | The record button (click again to stop) |
 | Pause / resume time | The pause button |
 | Reset `iTime` and `iFrame` to zero | The rewind button |
 | Feed the mouse to `iMouse` | Click and drag on the canvas |
 
 The editor panel keeps a separate source buffer and error log for each tab.
 Compiling (F5) rebuilds every visible tab.
+
+Recording writes `ShaderToyX_<date>_<time>.mp4` next to the executable
+(falling back to your Videos folder if that location is not writable). The
+sound shader's audio is included when the Sound tab is active at record
+start; the speaker mute only affects monitoring, not the recording. Pausing
+time also pauses the recording, so the file has no frozen stretches.
+Resizing the window (including entering or leaving fullscreen) stops the
+recording, since an H.264 stream cannot change resolution mid-file.
 
 The re-indenter is deliberately conservative: it only rewrites each line's
 leading whitespace from brace/paren depth (block-comment interiors are left
@@ -160,6 +166,7 @@ ShaderToyX/src/
   editor.*      Editor panel: tabs, toolbar, RichEdit code box with GLSL highlighting
   renderer.*    Full-screen quad and ping-pong framebuffers for the buffer passes
   audio.*       WASAPI playback for sound shaders (shared-mode render stream)
+  recorder.*    MP4 recording via the Media Foundation sink writer (H.264 + AAC)
   shader.*      Wraps user code in a Shadertoy-compatible fragment shader and links it
   gl_lite.*     Minimal OpenGL 3.3 function loader (only what the app uses)
 ShaderToyX/

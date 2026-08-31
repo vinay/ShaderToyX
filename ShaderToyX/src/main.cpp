@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -19,6 +20,7 @@
 #include "renderer.h"
 #include "editor.h"
 #include "audio.h"
+#include "recorder.h"
 
 /* ------------------------------------------------------------------ */
 /*  WGL extensions for a modern context                               */
@@ -548,6 +550,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     int    fps_frames  = 0;
     float  display_fps = 0.0f;
 
+    /* Recording state: capture size is locked for the file's lifetime
+       (H.264 cannot change resolution mid-stream) */
+    double         rec_clock  = 0.0;  /* unpaused seconds since record start */
+    int            rec_w      = 0;
+    int            rec_h      = 0;
+    unsigned char *rec_pixels = NULL;
+
     /* ---- Main loop ---- */
     while (g_running)
     {
@@ -643,8 +652,53 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             audio_flush();
         }
 
+        /* Record button was clicked */
+        if (editor.toggle_record)
+        {
+            editor.toggle_record = false;
+            if (recorder_is_active())
+            {
+                recorder_stop();
+            }
+            else
+            {
+                rec_w = g_gl_width  & ~1;  /* H.264 needs even dimensions */
+                rec_h = g_gl_height & ~1;
+                bool with_audio = audio_ok &&
+                                  editor_is_tab_visible(&editor, TAB_SOUND) &&
+                                  programs[TAB_SOUND].valid;
+                free(rec_pixels);
+                rec_pixels = (unsigned char *)malloc((size_t)rec_w * rec_h * 4);
+                if (rec_pixels && recorder_start(rec_w, rec_h, with_audio))
+                {
+                    /* Discard the queued audio lead so the captured audio
+                       starts at what is audible right now (the generator
+                       rewinds and reproduces the same samples). */
+                    audio_flush();
+                    rec_clock = 0.0;
+                }
+                else
+                {
+                    free(rec_pixels);
+                    rec_pixels = NULL;
+                }
+            }
+        }
+
+        /* Stop recording if the canvas was resized (incl. fullscreen) */
+        if (recorder_is_active() &&
+            ((g_gl_width & ~1) != rec_w || (g_gl_height & ~1) != rec_h))
+        {
+            recorder_stop();
+        }
+
+        /* Keep the button icon in sync (recording can also stop itself
+           on write errors) */
+        editor_set_recording(&editor, recorder_is_active());
+
         /* Update editor labels */
-        editor_update(&editor, elapsed, display_fps, g_gl_width, g_gl_height);
+        editor_update(&editor, elapsed, display_fps, g_gl_width, g_gl_height,
+                      recorder_is_active() ? (float)rec_clock : -1.0f);
 
         /* Fill uniforms */
         ShaderUniforms uniforms;
@@ -719,6 +773,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     sound_pcm[s * 2 + 1] = (short)(r - 32768);
                 }
                 audio_submit(sound_pcm, SOUND_BLOCK_SAMPLES);
+                recorder_write_audio(sound_pcm, SOUND_BLOCK_SAMPLES);
             }
             uniforms.iSampleOffset = 0;
         }
@@ -772,11 +827,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                                &uniforms, channels);
         }
 
+        /* Capture the finished frame. While paused nothing is written and
+           the recording clock is frozen, so pausing pauses the recording. */
+        if (recorder_is_active() && rec_pixels && !editor.paused)
+        {
+            glReadPixels(0, 0, rec_w, rec_h, GL_BGRA, GL_UNSIGNED_BYTE, rec_pixels);
+            recorder_write_video(rec_pixels, rec_clock);
+            rec_clock += delta;
+        }
+
         SwapBuffers(g_hdc);
         frame_count++;
     }
 
     /* ---- Cleanup ---- */
+    recorder_stop();
+    free(rec_pixels);
     audio_shutdown();
     g_editor = NULL;
     for (int i = 0; i < NUM_TABS; i++)

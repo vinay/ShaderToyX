@@ -83,7 +83,7 @@ set "CFLAGS_COMMON=/nologo /W3 /sdl /permissive- /std:c++20 /EHsc /MP /Zi"
 set "CFLAGS_COMMON=%CFLAGS_COMMON% /D_CRT_SECURE_NO_WARNINGS /DWIN32_LEAN_AND_MEAN /DNOMINMAX /DUNICODE /D_UNICODE"
 
 set "LFLAGS_COMMON=/NOLOGO /SUBSYSTEM:WINDOWS /DEBUG /MANIFEST:EMBED /MANIFESTINPUT:"%MANIFEST%""
-set "LIBS=kernel32.lib user32.lib gdi32.lib opengl32.lib comctl32.lib ole32.lib"
+set "LIBS=kernel32.lib user32.lib gdi32.lib opengl32.lib comctl32.lib ole32.lib mfplat.lib mfreadwrite.lib mfuuid.lib"
 
 set "FAILED=0"
 

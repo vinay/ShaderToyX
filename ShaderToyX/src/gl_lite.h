@@ -51,6 +51,7 @@ typedef void (APIENTRY *GLDEBUGPROC)(GLenum source, GLenum type, GLuint id,
 #define GL_FRAMEBUFFER_COMPLETE           0x8CD5
 #define GL_RGBA16F                        0x881A
 #define GL_CLAMP_TO_EDGE                  0x812F
+#define GL_BGRA                           0x80E1
 
 /* KHR_debug / GL 4.3 (optional, used by Debug builds only) */
 #define GL_DEBUG_OUTPUT                   0x92E0

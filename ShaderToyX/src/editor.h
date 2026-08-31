@@ -69,6 +69,8 @@ typedef struct Editor
     bool toggle_fullscreen;  /* set true to request a fullscreen toggle */
     bool fullscreen;         /* current fullscreen state, owned by main.cpp */
     bool sound_muted;        /* speaker button state */
+    bool toggle_record;      /* set true to request a recording start/stop */
+    bool recording;          /* current recording state, owned by main.cpp */
     int  active_tab;         /* 0=Image, 1=BufA, 2=BufB, 3=BufC, 4=BufD */
     int  dpi;                /* current DPI of the panel (96 = 100%) */
 
@@ -100,13 +102,16 @@ void editor_toggle(Editor *e);
 void editor_layout(Editor *e);
 void editor_set_dpi(Editor *e, int dpi);   /* recreate fonts + relayout for a new DPI */
 int  editor_panel_width(const Editor *e);  /* scaled width, or 0 when hidden */
-void editor_update(Editor *e, float elapsed_time, float fps, int canvas_w, int canvas_h);
+/* rec_time: seconds recorded so far, or a negative value when not recording */
+void editor_update(Editor *e, float elapsed_time, float fps, int canvas_w, int canvas_h,
+                   float rec_time);
 void editor_sync_from_control(Editor *e);  /* save active tab's EDIT to code[] */
 void editor_set_error(Editor *e, int tab, const char *text); /* store a compile log (converts \n to \r\n) */
 void editor_switch_tab(Editor *e, int tab); /* switch to the given tab */
 void editor_add_tab(Editor *e, int tab);     /* show a hidden buffer/sound tab */
 void editor_remove_tab(Editor *e, int tab);  /* hide a buffer tab */
 void editor_set_fullscreen(Editor *e, bool fullscreen); /* update state + button icon */
+void editor_set_recording(Editor *e, bool recording);   /* update state + button icon */
 bool editor_is_tab_visible(Editor *e, int tab);
 
 #endif
