@@ -44,6 +44,12 @@ static int    g_gl_width  = 1024;
 static int    g_gl_height = 768;
 static int    g_dpi       = 96;
 
+/* Borderless-fullscreen state: what to restore when leaving fullscreen */
+static bool            g_fullscreen           = false;
+static DWORD           g_saved_style          = 0;
+static WINDOWPLACEMENT g_saved_placement      = { sizeof(WINDOWPLACEMENT) };
+static bool            g_saved_editor_visible = false;
+
 /* Default canvas size at 96 DPI */
 #define DEFAULT_CANVAS_W  1024
 #define DEFAULT_CANVAS_H  768
@@ -103,6 +109,63 @@ static void layout_children(void)
     {
         MoveWindow(g_glview, gl_x, 0, gl_w, total_h, TRUE);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Borderless fullscreen toggle                                      */
+/* ------------------------------------------------------------------ */
+static void toggle_fullscreen(void)
+{
+    if (!g_fullscreen)
+    {
+        MONITORINFO mi = { sizeof(mi) };
+        if (!GetMonitorInfoA(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi))
+        {
+            return;
+        }
+
+        g_saved_style = (DWORD)GetWindowLongPtrA(g_hwnd, GWL_STYLE);
+        g_saved_placement.length = sizeof(g_saved_placement);
+        GetWindowPlacement(g_hwnd, &g_saved_placement);
+
+        g_fullscreen = true;
+
+        /* Hide the editor panel for an edge-to-edge canvas; F1 still works */
+        g_saved_editor_visible = g_editor && g_editor->show_editor;
+        if (g_saved_editor_visible)
+        {
+            editor_toggle(g_editor);
+        }
+
+        SetWindowLongPtrA(g_hwnd, GWL_STYLE,
+                          (LONG_PTR)((g_saved_style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP));
+        SetWindowPos(g_hwnd, HWND_TOP,
+                     mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+    }
+    else
+    {
+        g_fullscreen = false;
+
+        SetWindowLongPtrA(g_hwnd, GWL_STYLE, (LONG_PTR)g_saved_style);
+        SetWindowPlacement(g_hwnd, &g_saved_placement);
+        SetWindowPos(g_hwnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                     SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        if (g_saved_editor_visible && g_editor && !g_editor->show_editor)
+        {
+            editor_toggle(g_editor);
+        }
+    }
+
+    if (g_editor)
+    {
+        editor_set_fullscreen(g_editor, g_fullscreen);
+    }
+    layout_children();
 }
 
 /* ------------------------------------------------------------------ */
@@ -167,6 +230,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     case WM_GETMINMAXINFO:
     {
+        /* No minimum while fullscreen: the borderless window must be free
+           to match the monitor exactly, even one smaller than the minimum. */
+        if (g_fullscreen)
+        {
+            break;
+        }
         MINMAXINFO *mmi = (MINMAXINFO *)lParam;
         /* Minimum window size so the canvas is at least DEFAULT_CANVAS_W x DEFAULT_CANVAS_H */
         int min_client_w = sc(DEFAULT_CANVAS_W) + (g_editor ? editor_panel_width(g_editor) : 0);
@@ -495,6 +564,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 layout_children();
                 continue;
             }
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_F11)
+            {
+                toggle_fullscreen();
+                continue;
+            }
+            if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE && g_fullscreen)
+            {
+                toggle_fullscreen();
+                continue;
+            }
 
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
@@ -513,6 +592,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         double now   = get_time();
         float  delta = (float)(now - last_time);
         last_time = now;
+
+        /* Fullscreen button was clicked */
+        if (editor.toggle_fullscreen)
+        {
+            editor.toggle_fullscreen = false;
+            toggle_fullscreen();
+        }
 
         /* Handle reset */
         if (editor.reset_time)

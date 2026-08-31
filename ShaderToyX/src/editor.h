@@ -55,6 +55,8 @@ typedef struct Editor
     bool show_editor;
     bool paused;             /* true = iTime frozen */
     bool reset_time;         /* set true to reset iTime to 0 */
+    bool toggle_fullscreen;  /* set true to request a fullscreen toggle */
+    bool fullscreen;         /* current fullscreen state, owned by main.cpp */
     int  active_tab;         /* 0=Image, 1=BufA, 2=BufB, 3=BufC, 4=BufD */
     int  dpi;                /* current DPI of the panel (96 = 100%) */
 
@@ -92,6 +94,7 @@ void editor_set_error(Editor *e, int tab, const char *text); /* store a compile 
 void editor_switch_tab(Editor *e, int tab); /* switch to the given tab */
 void editor_add_tab(Editor *e);              /* show the next hidden buffer tab */
 void editor_remove_tab(Editor *e, int tab);  /* hide a buffer tab */
+void editor_set_fullscreen(Editor *e, bool fullscreen); /* update state + button icon */
 bool editor_is_tab_visible(Editor *e, int tab);
 
 #endif

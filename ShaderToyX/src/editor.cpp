@@ -279,7 +279,9 @@ static void draw_icon_button(Editor *e, DRAWITEMSTRUCT *dis)
         DeleteObject(ib);
     }
 
-    /* Fullscreen button: four corner brackets */
+    /* Fullscreen button: four corner brackets. The bracket vertex sits at
+       the outer corner normally ("enter fullscreen"), and at the inner
+       corner while fullscreen ("exit fullscreen"). */
     if (dis->CtlID == IDC_FULLSCR_BTN)
     {
         HPEN ip = CreatePen(PS_SOLID, sc(e, 2), iconClr);
@@ -288,25 +290,16 @@ static void draw_icon_button(Editor *e, DRAWITEMSTRUCT *dis)
         int m = sc(e, 5); /* margin from center */
         int s = sc(e, 4); /* stroke length */
 
-        /* Top-left corner */
-        MoveToEx(dis->hDC, cx - m, cy - m + s, NULL);
-        LineTo(dis->hDC, cx - m, cy - m);
-        LineTo(dis->hDC, cx - m + s, cy - m);
-
-        /* Top-right corner */
-        MoveToEx(dis->hDC, cx + m - s, cy - m, NULL);
-        LineTo(dis->hDC, cx + m, cy - m);
-        LineTo(dis->hDC, cx + m, cy - m + s);
-
-        /* Bottom-left corner */
-        MoveToEx(dis->hDC, cx - m, cy + m - s, NULL);
-        LineTo(dis->hDC, cx - m, cy + m);
-        LineTo(dis->hDC, cx - m + s, cy + m);
-
-        /* Bottom-right corner */
-        MoveToEx(dis->hDC, cx + m - s, cy + m, NULL);
-        LineTo(dis->hDC, cx + m, cy + m);
-        LineTo(dis->hDC, cx + m, cy + m - s);
+        static const int corner[4][2] = { {-1,-1}, {1,-1}, {-1,1}, {1,1} };
+        for (int i = 0; i < 4; i++)
+        {
+            int sx = corner[i][0];
+            int sy = corner[i][1];
+            int v  = e->fullscreen ? m - s : m; /* vertex distance from center */
+            MoveToEx(dis->hDC, cx + sx * m, cy + sy * (m - s), NULL);
+            LineTo(dis->hDC, cx + sx * v, cy + sy * v);
+            LineTo(dis->hDC, cx + sx * (m - s), cy + sy * m);
+        }
 
         SelectObject(dis->hDC, op);
         DeleteObject(ip);
@@ -379,7 +372,13 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            /* IDC_REC_BTN, IDC_SPEAKER_BTN, IDC_FULLSCR_BTN: not implemented yet */
+            if (id == IDC_FULLSCR_BTN && notify == BN_CLICKED)
+            {
+                e->toggle_fullscreen = true;
+                return 0;
+            }
+
+            /* IDC_REC_BTN, IDC_SPEAKER_BTN: not implemented yet */
         }
         break;
 
@@ -544,6 +543,8 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
     e->show_editor   = true;
     e->paused        = false;
     e->reset_time    = false;
+    e->toggle_fullscreen = false;
+    e->fullscreen        = false;
     e->active_tab    = TAB_IMAGE;
 
     /* Only Image tab visible by default */
@@ -598,7 +599,7 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
     add_tooltip(e->panel, e->reset_btn,   hInstance, "Reset Time");
     add_tooltip(e->panel, e->rec_btn,     hInstance, "Record (not implemented yet)");
     add_tooltip(e->panel, e->speaker_btn, hInstance, "Sound On/Off (not implemented yet)");
-    add_tooltip(e->panel, e->fullscr_btn, hInstance, "Fullscreen (not implemented yet)");
+    add_tooltip(e->panel, e->fullscr_btn, hInstance, "Fullscreen (F11, Esc to exit)");
 
     /* Tab buttons (owner-draw for custom look); visibility set in layout */
     for (int i = 0; i < NUM_TABS; i++)
@@ -659,6 +660,16 @@ void editor_toggle(Editor *e)
 {
     e->show_editor = !e->show_editor;
     ShowWindow(e->panel, e->show_editor ? SW_SHOW : SW_HIDE);
+}
+
+/* ------------------------------------------------------------------ */
+void editor_set_fullscreen(Editor *e, bool fullscreen)
+{
+    if (e->fullscreen != fullscreen)
+    {
+        e->fullscreen = fullscreen;
+        InvalidateRect(e->fullscr_btn, NULL, TRUE);
+    }
 }
 
 /* ------------------------------------------------------------------ */

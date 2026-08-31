@@ -25,10 +25,11 @@ five source files under `ShaderToyX/src/`.
 - Pause / resume and reset-time controls, FPS and resolution readout
 - Per-monitor DPI aware
 - Toggle the editor panel with **F1** for a full-window canvas
+- Borderless fullscreen with **F11** or the fullscreen button (**Esc** to exit)
 
 ### Work in progress
 
-The **Record**, **Speaker** (sound) and **Fullscreen** toolbar buttons are present in the
+The **Record** and **Speaker** (sound) toolbar buttons are present in the
 UI but not implemented yet. They currently do nothing when clicked.
 
 ## Download
@@ -90,6 +91,7 @@ Debug builds request a debug OpenGL context and log driver messages to the Visua
 | --- | --- |
 | Compile the current shader | **F5** or the **Compile** button |
 | Show / hide the editor panel | **F1** |
+| Enter / leave fullscreen | **F11** or the fullscreen button; **Esc** leaves |
 | Add a buffer pass | The **+** button on the tab bar |
 | Remove a buffer pass | The **x** on the buffer's tab |
 | Pause / resume time | The pause button |
