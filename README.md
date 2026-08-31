@@ -21,6 +21,9 @@ five source files under `ShaderToyX/src/`.
   `iSampleRate`, `iChannelTime`, `iChannelResolution`, `iChannel0`–`iChannel3`)
 - Multi-pass rendering: an **Image** tab plus up to four **Buffer** tabs (A–D),
   each backed by a ping-pong pair of RGBA16F framebuffers
+- **Sound shaders**: a Sound tab with Shadertoy's `mainSound()` entry point,
+  evaluated on the GPU and streamed to the default output via WASAPI;
+  the speaker toolbar button mutes/unmutes
 - Compile errors shown per tab, with line numbers matching your code
 - Pause / resume and reset-time controls, FPS and resolution readout
 - Per-monitor DPI aware
@@ -29,8 +32,8 @@ five source files under `ShaderToyX/src/`.
 
 ### Work in progress
 
-The **Record** and **Speaker** (sound) toolbar buttons are present in the
-UI but not implemented yet. They currently do nothing when clicked.
+The **Record** toolbar button is present in the UI but not implemented yet.
+It currently does nothing when clicked.
 
 ## Download
 
@@ -92,8 +95,9 @@ Debug builds request a debug OpenGL context and log driver messages to the Visua
 | Compile the current shader | **F5** or the **Compile** button |
 | Show / hide the editor panel | **F1** |
 | Enter / leave fullscreen | **F11** or the fullscreen button; **Esc** leaves |
-| Add a buffer pass | The **+** button on the tab bar |
-| Remove a buffer pass | The **x** on the buffer's tab |
+| Add a buffer or sound pass | The **+** button on the tab bar opens a menu |
+| Remove a buffer or sound pass | The **x** on the tab |
+| Mute / unmute sound | The speaker button |
 | Pause / resume time | The pause button |
 | Reset `iTime` and `iFrame` to zero | The rewind button |
 | Feed the mouse to `iMouse` | Click and drag on the canvas |
@@ -114,6 +118,14 @@ Compiling (F5) rebuilds every visible tab.
   that chain buffers within a frame will be one frame behind per hop.
 - `iTimeDelta` keeps reporting the real frame time while paused.
 - Resizing the window recreates the buffers, which clears their contents.
+- **Sound shaders** run at 44.1 kHz, 16-bit stereo, generated on the GPU in
+  ~1.5-second blocks a few seconds ahead of playback. Unlike Shadertoy there is
+  no 3-minute cap — the stream plays for as long as the app runs. Recompiling
+  swaps the sound in place without rewinding; the reset button rewinds it to 0
+  along with `iTime`. `iChannel0`–`iChannel3` are bound to Buffer A–D as usual,
+  but a sound block samples whatever those buffers held when the block was
+  generated (up to a few seconds early). `iTime`-style per-frame uniforms are
+  available but only meaningful per block; use the `time` argument instead.
 
 ## Continuous integration and releases
 
@@ -137,6 +149,7 @@ ShaderToyX/src/
   main.cpp      Win32 window, OpenGL context, main loop, uniform setup
   editor.*      Editor panel: tabs, code/error boxes, toolbar (pure Win32 controls)
   renderer.*    Full-screen quad and ping-pong framebuffers for the buffer passes
+  audio.*       WASAPI playback for sound shaders (shared-mode render stream)
   shader.*      Wraps user code in a Shadertoy-compatible fragment shader and links it
   gl_lite.*     Minimal OpenGL 3.3 function loader (only what the app uses)
 ShaderToyX/

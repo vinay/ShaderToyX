@@ -19,13 +19,14 @@
    scaled, visibility-aware value. */
 #define EDITOR_PANEL_W  620
 
-#define NUM_TABS  5  /* Image, Buf A, Buf B, Buf C, Buf D */
+#define NUM_TABS  6  /* Image, Buf A, Buf B, Buf C, Buf D, Sound */
 
 #define TAB_IMAGE   0
 #define TAB_BUF_A   1
 #define TAB_BUF_B   2
 #define TAB_BUF_C   3
 #define TAB_BUF_D   4
+#define TAB_SOUND   5
 
 /* Control IDs */
 #define IDC_CODE_EDIT    1001
@@ -38,12 +39,13 @@
 #define IDC_TAB_BUF_B    1012
 #define IDC_TAB_BUF_C    1013
 #define IDC_TAB_BUF_D    1014
-#define IDC_ADD_TAB_BTN  1015
+#define IDC_TAB_SOUND    1015
 #define IDC_PAUSE_BTN    1016
 #define IDC_RESET_BTN    1017
 #define IDC_REC_BTN      1018
 #define IDC_SPEAKER_BTN  1019
 #define IDC_FULLSCR_BTN  1020
+#define IDC_ADD_TAB_BTN  1021
 
 typedef struct Editor
 {
@@ -57,6 +59,7 @@ typedef struct Editor
     bool reset_time;         /* set true to reset iTime to 0 */
     bool toggle_fullscreen;  /* set true to request a fullscreen toggle */
     bool fullscreen;         /* current fullscreen state, owned by main.cpp */
+    bool sound_muted;        /* speaker button state */
     int  active_tab;         /* 0=Image, 1=BufA, 2=BufB, 3=BufC, 4=BufD */
     int  dpi;                /* current DPI of the panel (96 = 100%) */
 
@@ -92,7 +95,7 @@ void editor_update(Editor *e, float elapsed_time, float fps, int canvas_w, int c
 void editor_sync_from_control(Editor *e);  /* save active tab's EDIT to code[] */
 void editor_set_error(Editor *e, int tab, const char *text); /* store a compile log (converts \n to \r\n) */
 void editor_switch_tab(Editor *e, int tab); /* switch to the given tab */
-void editor_add_tab(Editor *e);              /* show the next hidden buffer tab */
+void editor_add_tab(Editor *e, int tab);     /* show a hidden buffer/sound tab */
 void editor_remove_tab(Editor *e, int tab);  /* hide a buffer tab */
 void editor_set_fullscreen(Editor *e, bool fullscreen); /* update state + button icon */
 bool editor_is_tab_visible(Editor *e, int tab);

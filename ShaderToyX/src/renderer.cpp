@@ -80,6 +80,21 @@ void renderer_init(Renderer *r)
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
+
+    /* Fixed-size RGBA8 target for sound shader blocks */
+    glGenTextures(1, &r->sound_tex);
+    glBindTexture(GL_TEXTURE_2D, r->sound_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SOUND_TEX_W, SOUND_TEX_H, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glGenFramebuffers(1, &r->sound_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->sound_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, r->sound_tex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -92,6 +107,9 @@ void renderer_destroy(Renderer *r)
     {
         destroy_buffer_pass(&r->buffers[i]);
     }
+
+    if (r->sound_fbo) glDeleteFramebuffers(1, &r->sound_fbo);
+    if (r->sound_tex) glDeleteTextures(1, &r->sound_tex);
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,6 +178,21 @@ GLuint renderer_get_buffer_texture(Renderer *r, int buf_index)
         return r->buffers[buf_index].tex[r->buffers[buf_index].current];
     }
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+void renderer_render_sound_block(Renderer *r, ShaderProgram *sp,
+                                 const ShaderUniforms *uniforms,
+                                 GLuint channel_textures[4],
+                                 unsigned char *out_rgba)
+{
+    glViewport(0, 0, SOUND_TEX_W, SOUND_TEX_H);
+    renderer_draw_pass(r, r->sound_fbo, sp, uniforms, channel_textures);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, r->sound_fbo);
+    glReadPixels(0, 0, SOUND_TEX_W, SOUND_TEX_H,
+                 GL_RGBA, GL_UNSIGNED_BYTE, out_rgba);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 /* ------------------------------------------------------------------ */

@@ -18,6 +18,7 @@
 #include "shader.h"
 #include "renderer.h"
 #include "editor.h"
+#include "audio.h"
 
 /* ------------------------------------------------------------------ */
 /*  WGL extensions for a modern context                               */
@@ -466,7 +467,7 @@ static void compile_all(Editor *editor, ShaderProgram *programs)
         editor->error_log[i][0] = '\0';
         if (editor_is_tab_visible(editor, i) && editor->code[i][0])
         {
-            if (!shader_compile(&programs[i], editor->code[i]))
+            if (!shader_compile(&programs[i], editor->code[i], i == TAB_SOUND))
             {
                 editor_set_error(editor, i, programs[i].compile_error);
             }
@@ -522,6 +523,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     editor_init(&editor, g_hwnd, hInstance, g_dpi);
     g_editor = &editor;
     layout_children();
+
+    /* Sound output. Failure is not fatal: sound shaders still compile,
+       there is just nothing to hear. */
+    bool audio_ok = audio_init();
 
     /* One shader program per tab: Image + 4 buffers */
     ShaderProgram programs[NUM_TABS];
@@ -606,6 +611,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             shader_time = 0.0f;
             frame_count = 0;
             editor.reset_time = false;
+            audio_reset();
         }
 
         /* Advance shader time only when not paused */
@@ -631,6 +637,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         {
             compile_all(&editor, programs);
             editor.needs_compile = false;
+
+            /* Drop queued audio from the old sound shader; the new one
+               takes over from the position that was last audible. */
+            audio_flush();
         }
 
         /* Update editor labels */
@@ -646,7 +656,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         uniforms.iTime          = elapsed;
         uniforms.iTimeDelta     = delta;
         uniforms.iFrame         = frame_count;
-        uniforms.iSampleRate    = 44100.0f;
+        uniforms.iSampleRate    = (float)AUDIO_SAMPLE_RATE;
 
         /* iMouse, matching Shadertoy:
              xy = current position while dragging (last position afterwards)
@@ -674,6 +684,43 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             uniforms.iDate[1] = (float)(lt->tm_mon);
             uniforms.iDate[2] = (float)(lt->tm_mday);
             uniforms.iDate[3] = (float)(lt->tm_hour * 3600 + lt->tm_min * 60 + lt->tm_sec);
+        }
+
+        /* ---- Sound: keep the audio device buffer topped up ---- */
+        bool sound_active = audio_ok &&
+                            editor_is_tab_visible(&editor, TAB_SOUND) &&
+                            programs[TAB_SOUND].valid;
+        audio_set_mute(editor.sound_muted);
+        audio_set_paused(editor.paused || !sound_active);
+        if (sound_active && !editor.paused)
+        {
+            /* Block staging buffers (256 KB each); keep them off the stack */
+            static unsigned char sound_rgba[SOUND_BLOCK_SAMPLES * 4];
+            static short         sound_pcm[SOUND_BLOCK_SAMPLES * 2];
+
+            while (audio_frames_writable() >= SOUND_BLOCK_SAMPLES)
+            {
+                uniforms.iSampleOffset = audio_next_sample();
+
+                GLuint channels[4];
+                for (int c = 0; c < 4; c++)
+                {
+                    channels[c] = renderer_get_buffer_texture(&renderer, c);
+                }
+                renderer_render_sound_block(&renderer, &programs[TAB_SOUND],
+                                            &uniforms, channels, sound_rgba);
+
+                /* Decode: 16 bits per channel split across RGBA */
+                for (int s = 0; s < SOUND_BLOCK_SAMPLES; s++)
+                {
+                    int l = sound_rgba[s * 4 + 0] | (sound_rgba[s * 4 + 1] << 8);
+                    int r = sound_rgba[s * 4 + 2] | (sound_rgba[s * 4 + 3] << 8);
+                    sound_pcm[s * 2 + 0] = (short)(l - 32768);
+                    sound_pcm[s * 2 + 1] = (short)(r - 32768);
+                }
+                audio_submit(sound_pcm, SOUND_BLOCK_SAMPLES);
+            }
+            uniforms.iSampleOffset = 0;
         }
 
         /* Resize FBOs if viewport changed */
@@ -730,6 +777,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     /* ---- Cleanup ---- */
+    audio_shutdown();
     g_editor = NULL;
     for (int i = 0; i < NUM_TABS; i++)
     {

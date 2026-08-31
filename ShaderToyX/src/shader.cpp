@@ -43,6 +43,7 @@ static const char *fragment_header =
     "uniform sampler2D iChannel1;\n"
     "uniform sampler2D iChannel2;\n"
     "uniform sampler2D iChannel3;\n"
+    "uniform int       iSampleOffset;\n"
     "\n"
     "#line 1\n";
 
@@ -56,6 +57,27 @@ static const char *fragment_footer =
     "    vec4 _stx_color = vec4(0.0, 0.0, 0.0, 1.0);\n"
     "    mainImage(_stx_color, gl_FragCoord.xy);\n"
     "    _stx_FragColor = _stx_color;\n"
+    "}\n";
+
+/* ------------------------------------------------------------------ */
+/*  Sound shader footer: calls the user's mainSound once per pixel.    */
+/*  Each pixel is one stereo sample; left/right are clamped to ±1 and  */
+/*  stored as 16-bit values split across the four 8-bit channels       */
+/*  (left low/high in RG, right low/high in BA).                       */
+/* ------------------------------------------------------------------ */
+#define STX_STR2(x) #x
+#define STX_STR(x)  STX_STR2(x)
+
+static const char *sound_footer =
+    "\n"
+    "void main()\n"
+    "{\n"
+    "    int  _stx_samp = iSampleOffset + int(gl_FragCoord.y) * " STX_STR(SOUND_TEX_W) " + int(gl_FragCoord.x);\n"
+    "    vec2 _stx_snd  = clamp(mainSound(_stx_samp, float(_stx_samp) / iSampleRate), -1.0, 1.0);\n"
+    "    vec2 _stx_u16  = floor((0.5 + 0.5 * _stx_snd) * 65535.0);\n"
+    "    vec2 _stx_lo   = mod(_stx_u16, 256.0) / 255.0;\n"
+    "    vec2 _stx_hi   = floor(_stx_u16 / 256.0) / 255.0;\n"
+    "    _stx_FragColor = vec4(_stx_lo.x, _stx_hi.x, _stx_lo.y, _stx_hi.y);\n"
     "}\n";
 
 /* ------------------------------------------------------------------ */
@@ -103,7 +125,7 @@ static GLuint compile_shader(GLenum type, const char *source, char *error, int e
 }
 
 /* ------------------------------------------------------------------ */
-int shader_compile(ShaderProgram *sp, const char *user_source)
+int shader_compile(ShaderProgram *sp, const char *user_source, int is_sound)
 {
     sp->compile_error[0] = '\0';
 
@@ -119,9 +141,10 @@ int shader_compile(ShaderProgram *sp, const char *user_source)
     }
 
     /* Build full fragment source: header + user code + footer */
+    const char *footer = is_sound ? sound_footer : fragment_footer;
     size_t hlen = strlen(fragment_header);
     size_t ulen = strlen(user_source);
-    size_t flen = strlen(fragment_footer);
+    size_t flen = strlen(footer);
     size_t total = hlen + ulen + flen + 1;
 
     char *full_src = (char *)malloc(total);
@@ -133,7 +156,7 @@ int shader_compile(ShaderProgram *sp, const char *user_source)
 
     memcpy(full_src, fragment_header, hlen);
     memcpy(full_src + hlen, user_source, ulen);
-    memcpy(full_src + hlen + ulen, fragment_footer, flen);
+    memcpy(full_src + hlen + ulen, footer, flen);
     full_src[total - 1] = '\0';
 
     /* Compile fragment shader */
@@ -194,6 +217,7 @@ void shader_set_uniforms(ShaderProgram *sp, const ShaderUniforms *u)
     glUniform1f (glGetUniformLocation(p, "iSampleRate"), u->iSampleRate);
     glUniform1fv(glGetUniformLocation(p, "iChannelTime"), 4, u->iChannelTime);
     glUniform3fv(glGetUniformLocation(p, "iChannelResolution"), 4, u->iChannelResolution);
+    glUniform1i (glGetUniformLocation(p, "iSampleOffset"), u->iSampleOffset);
 
     /* Bind texture units for iChannel0..3 */
     glUniform1i(glGetUniformLocation(p, "iChannel0"), 0);

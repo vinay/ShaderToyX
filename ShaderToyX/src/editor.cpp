@@ -67,6 +67,21 @@ static const char *default_buffer_shader =
     "    fragColor = vec4(0.0, 0.0, 0.0, 1.0);\r\n"
     "}\r\n";
 
+static const char *default_sound_shader =
+    "//\r\n"
+    "//  Sound shader: return the stereo sample (each in -1..1) for `time`.\r\n"
+    "//  Press F5 to compile; the speaker button mutes/unmutes.\r\n"
+    "//\r\n"
+    "\r\n"
+    "vec2 mainSound(int samp, float time)\r\n"
+    "{\r\n"
+    "    // A gentle A3 + C#4 dyad with a little vibrato\r\n"
+    "    float v = 1.0 + 0.004 * sin(6.28318 * 5.0 * time);\r\n"
+    "    float s = 0.30 * sin(6.28318 * 220.00 * time * v)\r\n"
+    "            + 0.20 * sin(6.28318 * 277.18 * time);\r\n"
+    "    return vec2(s);\r\n"
+    "}\r\n";
+
 /* ------------------------------------------------------------------ */
 /*  Layout constants (in 96-DPI pixels; scaled via sc() at runtime)   */
 /* ------------------------------------------------------------------ */
@@ -85,7 +100,7 @@ static const char *default_buffer_shader =
 static const char *panel_class = "ShaderToyX_EditorPanel";
 static bool panel_class_registered = false;
 
-static const char *tab_names[NUM_TABS] = { "Image", "Buf A", "Buf B", "Buf C", "Buf D" };
+static const char *tab_names[NUM_TABS] = { "Image", "Buf A", "Buf B", "Buf C", "Buf D", "Sound" };
 
 /* Scale a 96-DPI pixel value to the editor's current DPI */
 static int sc(const Editor *e, int v)
@@ -266,12 +281,23 @@ static void draw_icon_button(Editor *e, DRAWITEMSTRUCT *dis)
         cone[2] = { cx + sc(e, 1), cy };
         Polygon(dis->hDC, cone, 3);
 
-        /* Sound wave arcs */
-        SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
-        Arc(dis->hDC, cx + sc(e, 1), cy - sc(e, 4), cx + sc(e, 7), cy + sc(e, 4),
-            cx + sc(e, 1), cy - sc(e, 4), cx + sc(e, 1), cy + sc(e, 4));
-        Arc(dis->hDC, cx + sc(e, 3), cy - sc(e, 7), cx + sc(e, 11), cy + sc(e, 7),
-            cx + sc(e, 3), cy - sc(e, 7), cx + sc(e, 3), cy + sc(e, 7));
+        if (!e->sound_muted)
+        {
+            /* Sound wave arcs */
+            SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
+            Arc(dis->hDC, cx + sc(e, 1), cy - sc(e, 4), cx + sc(e, 7), cy + sc(e, 4),
+                cx + sc(e, 1), cy - sc(e, 4), cx + sc(e, 1), cy + sc(e, 4));
+            Arc(dis->hDC, cx + sc(e, 3), cy - sc(e, 7), cx + sc(e, 11), cy + sc(e, 7),
+                cx + sc(e, 3), cy - sc(e, 7), cx + sc(e, 3), cy + sc(e, 7));
+        }
+        else
+        {
+            /* Muted: an x where the waves would be */
+            MoveToEx(dis->hDC, cx + sc(e, 3), cy - sc(e, 4), NULL);
+            LineTo(dis->hDC, cx + sc(e, 10), cy + sc(e, 4));
+            MoveToEx(dis->hDC, cx + sc(e, 10), cy - sc(e, 4), NULL);
+            LineTo(dis->hDC, cx + sc(e, 3), cy + sc(e, 4));
+        }
 
         SelectObject(dis->hDC, ob);
         SelectObject(dis->hDC, op);
@@ -303,6 +329,47 @@ static void draw_icon_button(Editor *e, DRAWITEMSTRUCT *dis)
 
         SelectObject(dis->hDC, op);
         DeleteObject(ip);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/*  "+" button: pick which kind of tab to add from a popup menu       */
+/* ------------------------------------------------------------------ */
+static void show_add_tab_menu(Editor *e)
+{
+    enum { IDM_ADD_BUFFER = 1, IDM_ADD_SOUND = 2 };
+
+    int next_buffer = -1;
+    for (int i = TAB_BUF_A; i <= TAB_BUF_D; i++)
+    {
+        if (!e->tab_visible[i]) { next_buffer = i; break; }
+    }
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu)
+    {
+        return;
+    }
+    AppendMenuA(menu, MF_STRING | (next_buffer >= 0 ? 0 : MF_GRAYED),
+                IDM_ADD_BUFFER, "Buffer");
+    AppendMenuA(menu, MF_STRING | (e->tab_visible[TAB_SOUND] ? MF_GRAYED : 0),
+                IDM_ADD_SOUND, "Sound");
+
+    RECT rc;
+    GetWindowRect(e->add_tab_btn, &rc);
+    int cmd = (int)TrackPopupMenu(menu,
+                                  TPM_RETURNCMD | TPM_NONOTIFY |
+                                  TPM_LEFTALIGN | TPM_TOPALIGN,
+                                  rc.left, rc.bottom, 0, e->panel, NULL);
+    DestroyMenu(menu);
+
+    if (cmd == IDM_ADD_BUFFER && next_buffer >= 0)
+    {
+        editor_add_tab(e, next_buffer);
+    }
+    else if (cmd == IDM_ADD_SOUND)
+    {
+        editor_add_tab(e, TAB_SOUND);
     }
 }
 
@@ -341,8 +408,8 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            /* Tab button clicks — check for close "x" on buffer tabs */
-            if (id >= IDC_TAB_IMAGE && id <= IDC_TAB_BUF_D && notify == BN_CLICKED)
+            /* Tab button clicks — check for close "x" on buffer/sound tabs */
+            if (id >= IDC_TAB_IMAGE && id <= IDC_TAB_SOUND && notify == BN_CLICKED)
             {
                 int tab = id - IDC_TAB_IMAGE;
 
@@ -365,10 +432,10 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            /* "+" button adds next buffer tab */
+            /* "+" button offers the hidden tab kinds in a menu */
             if (id == IDC_ADD_TAB_BTN && notify == BN_CLICKED)
             {
-                editor_add_tab(e);
+                show_add_tab_menu(e);
                 return 0;
             }
 
@@ -378,7 +445,14 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 return 0;
             }
 
-            /* IDC_REC_BTN, IDC_SPEAKER_BTN: not implemented yet */
+            if (id == IDC_SPEAKER_BTN && notify == BN_CLICKED)
+            {
+                e->sound_muted = !e->sound_muted;
+                InvalidateRect(e->speaker_btn, NULL, TRUE);
+                return 0;
+            }
+
+            /* IDC_REC_BTN: not implemented yet */
         }
         break;
 
@@ -401,7 +475,7 @@ static LRESULT CALLBACK panel_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_DRAWITEM:
     {
         DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lParam;
-        if (e && dis->CtlID >= IDC_TAB_IMAGE && dis->CtlID <= IDC_TAB_BUF_D)
+        if (e && dis->CtlID >= IDC_TAB_IMAGE && dis->CtlID <= IDC_TAB_SOUND)
         {
             int tab = dis->CtlID - IDC_TAB_IMAGE;
             bool active = (tab == e->active_tab);
@@ -533,11 +607,12 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
     /* Initialize Image tab with default shader */
     strncpy(e->code[TAB_IMAGE], default_shader, EDITOR_CODE_SIZE - 1);
 
-    /* Initialize buffer tabs with empty shaders */
+    /* Initialize buffer tabs with empty shaders, Sound with its template */
     for (int i = TAB_BUF_A; i <= TAB_BUF_D; i++)
     {
         strncpy(e->code[i], default_buffer_shader, EDITOR_CODE_SIZE - 1);
     }
+    strncpy(e->code[TAB_SOUND], default_sound_shader, EDITOR_CODE_SIZE - 1);
 
     e->needs_compile = false;
     e->show_editor   = true;
@@ -545,11 +620,12 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
     e->reset_time    = false;
     e->toggle_fullscreen = false;
     e->fullscreen        = false;
+    e->sound_muted       = false;
     e->active_tab    = TAB_IMAGE;
 
     /* Only Image tab visible by default */
     e->tab_visible[TAB_IMAGE] = true;
-    for (int i = TAB_BUF_A; i <= TAB_BUF_D; i++)
+    for (int i = TAB_BUF_A; i < NUM_TABS; i++)
     {
         e->tab_visible[i] = false;
     }
@@ -598,7 +674,7 @@ void editor_init(Editor *e, HWND parent, HINSTANCE hInstance, int dpi)
     add_tooltip(e->panel, e->pause_btn,   hInstance, "Pause / Resume");
     add_tooltip(e->panel, e->reset_btn,   hInstance, "Reset Time");
     add_tooltip(e->panel, e->rec_btn,     hInstance, "Record (not implemented yet)");
-    add_tooltip(e->panel, e->speaker_btn, hInstance, "Sound On/Off (not implemented yet)");
+    add_tooltip(e->panel, e->speaker_btn, hInstance, "Sound On/Off");
     add_tooltip(e->panel, e->fullscr_btn, hInstance, "Fullscreen (F11, Esc to exit)");
 
     /* Tab buttons (owner-draw for custom look); visibility set in layout */
@@ -845,19 +921,15 @@ void editor_switch_tab(Editor *e, int tab)
 }
 
 /* ------------------------------------------------------------------ */
-void editor_add_tab(Editor *e)
+void editor_add_tab(Editor *e, int tab)
 {
-    /* Find the next hidden buffer tab and make it visible */
-    for (int i = TAB_BUF_A; i <= TAB_BUF_D; i++)
+    if (tab <= TAB_IMAGE || tab >= NUM_TABS || e->tab_visible[tab])
     {
-        if (!e->tab_visible[i])
-        {
-            e->tab_visible[i] = true;
-            editor_layout(e);
-            editor_switch_tab(e, i);
-            return;
-        }
+        return;
     }
+    e->tab_visible[tab] = true;
+    editor_layout(e);
+    editor_switch_tab(e, tab);
 }
 
 /* ------------------------------------------------------------------ */
@@ -884,8 +956,9 @@ void editor_remove_tab(Editor *e, int tab)
     /* Hide the tab */
     e->tab_visible[tab] = false;
 
-    /* Clear its shader code and error log */
-    strncpy(e->code[tab], default_buffer_shader, EDITOR_CODE_SIZE - 1);
+    /* Reset its shader code to the default template and clear the log */
+    const char *def = (tab == TAB_SOUND) ? default_sound_shader : default_buffer_shader;
+    strncpy(e->code[tab], def, EDITOR_CODE_SIZE - 1);
     e->code[tab][EDITOR_CODE_SIZE - 1] = '\0';
     e->error_log[tab][0] = '\0';
 

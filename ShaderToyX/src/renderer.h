@@ -27,6 +27,8 @@ typedef struct Renderer
     GLuint     vao;
     GLuint     vbo;
     BufferPass buffers[NUM_BUFFERS];
+    GLuint     sound_fbo;   /* RGBA8 target for sound shader blocks */
+    GLuint     sound_tex;
 } Renderer;
 
 void renderer_init(Renderer *r);
@@ -50,5 +52,15 @@ GLuint renderer_get_buffer_texture(Renderer *r, int buf_index);
 
 /* Get the writable FBO for a buffer */
 GLuint renderer_get_buffer_fbo(Renderer *r, int buf_index);
+
+/* Render one SOUND_BLOCK_SAMPLES block of a sound shader and read back
+   the encoded samples (SOUND_BLOCK_SAMPLES * 4 bytes of RGBA).
+   The block's first sample index comes from uniforms->iSampleOffset.
+   Leaves the GL viewport set to the sound target size; the caller is
+   expected to reset it before drawing visual passes. */
+void renderer_render_sound_block(Renderer *r, ShaderProgram *sp,
+                                 const ShaderUniforms *uniforms,
+                                 GLuint channel_textures[4],
+                                 unsigned char *out_rgba);
 
 #endif
